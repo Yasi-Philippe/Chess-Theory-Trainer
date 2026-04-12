@@ -1,6 +1,7 @@
 export type PlayerColor = 'white' | 'black';
 
-export type OpeningMode = 'from_position' | 'play_through';
+/** theory = play through opening theory then free play; free = Stockfish best moves from move 1 */
+export type OpeningMode = 'theory' | 'free';
 
 export interface Opening {
   id: string;
@@ -36,7 +37,7 @@ export interface GameState {
   moveCount: number;
   consecutiveMisses: number;
   playerColor: PlayerColor;
-  opening: Opening;
+  opening: Opening | null;
   openingMode: OpeningMode;
   /** Index into opening.moves for OPENING_PHASE */
   openingMoveIndex: number;
@@ -45,7 +46,7 @@ export interface GameState {
 }
 
 export interface SetupParams {
-  opening: Opening;
+  opening: Opening | null; // null in free mode
   color: PlayerColor;
   mode: OpeningMode;
 }

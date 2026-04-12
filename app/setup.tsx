@@ -9,7 +9,7 @@ export default function SetupScreen() {
   const router = useRouter();
   const setSetup = useGameStore(state => state.setSetup);
 
-  function handleSelect(opening: Opening, color: PlayerColor, mode: OpeningMode) {
+  function handleSelect(opening: Opening | null, color: PlayerColor, mode: OpeningMode) {
     setSetup({ opening, color, mode });
     router.push('/game');
   }

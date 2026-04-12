@@ -12,7 +12,7 @@ export interface PlayerMoveResult {
 }
 
 interface UseChessGameParams {
-  opening: Opening;
+  opening: Opening | null;
   playerColor: PlayerColor;
   mode: OpeningMode;
   getBestMove: (fen: string, color: PlayerColor) => Promise<StockfishMove[]>;
@@ -25,28 +25,19 @@ export interface ChessGameState {
   consecutiveMisses: number;
   feedbackMessage: string | null;
   openingMoveIndex: number;
-  /** FEN of the last accepted position — used by the screen to reset the board on undo */
+  /** FEN of the last accepted position — used by the screen to reset the board on wrong move */
   lastValidFen: string;
-  /** FEN the board should start with */
+  /** FEN the board started from (initial) */
   startingFen: string;
 }
 
-/**
- * Builds the FEN for the position at the start of the game.
- * In 'from_position' mode, we fast-forward through all opening moves.
- * In 'play_through' mode, we start from the standard starting position.
- */
-function buildStartingFen(opening: Opening, mode: OpeningMode): string {
-  if (mode !== 'from_position') return new Chess().fen();
-  const chess = new Chess();
-  for (const san of opening.moves) {
-    try {
-      chess.move(san);
-    } catch {
-      break;
-    }
-  }
-  return chess.fen();
+const INITIAL_FEN = new Chess().fen();
+
+/** Returns true if it is the player's turn at this opening move index */
+function isPlayerTurnAtIndex(index: number, playerColor: PlayerColor): boolean {
+  // Even indices (0, 2, 4…) are White's moves; odd indices are Black's
+  const whiteToMove = index % 2 === 0;
+  return playerColor === 'white' ? whiteToMove : !whiteToMove;
 }
 
 /** Converts a UCI string like "e2e4" or "e7e8q" into { from, to, promotion } */
@@ -65,26 +56,30 @@ export function useChessGame({
   getBestMove,
   getTopMove,
 }: UseChessGameParams) {
-  /** Our chess.js instance is the source of truth for positions we send to Stockfish */
-  const chessRef = useRef<Chess>(new Chess(buildStartingFen(opening, mode)));
-
-  const startingFen = buildStartingFen(opening, mode);
+  const chessRef = useRef<Chess>(new Chess());
   const engineColor: PlayerColor = playerColor === 'white' ? 'black' : 'white';
 
+  const getInitialPhase = (): GamePhase => {
+    if (mode === 'free') return 'GAME_PHASE';
+    // Theory mode: if opening exists and it's the opponent's turn first (player is Black),
+    // we need to play opponent's opening moves first before the player can move.
+    return 'OPENING_PHASE';
+  };
+
   const [state, setState] = useState<ChessGameState>({
-    phase: mode === 'play_through' ? 'OPENING_PHASE' : 'GAME_PHASE',
+    phase: getInitialPhase(),
     moveCount: 0,
     consecutiveMisses: 0,
     feedbackMessage: null,
     openingMoveIndex: 0,
-    lastValidFen: startingFen,
-    startingFen,
+    lastValidFen: INITIAL_FEN,
+    startingFen: INITIAL_FEN,
   });
 
   /** Prevents re-entrant processing while async validation is running */
   const processingRef = useRef(false);
 
-  // ─── Private helpers ──────────────────────────────────────────────────────
+  // ─── Engine helpers ───────────────────────────────────────────────────────
 
   async function fetchEngineMove(): Promise<{ from: Square; to: Square; promotion?: string } | null> {
     const fen = chessRef.current.fen();
@@ -92,7 +87,6 @@ export function useChessGame({
       const topMoves = await getBestMove(fen, engineColor);
       if (topMoves.length === 0) return null;
       const chosen = weightedRandomMove(topMoves);
-      // Apply to our internal chess instance so the FEN stays up to date
       const move = chessRef.current.move(chosen.uci);
       if (!move) return null;
       return uciToSquares(chosen.uci);
@@ -103,11 +97,57 @@ export function useChessGame({
 
   // ─── Opening phase ────────────────────────────────────────────────────────
 
+  /**
+   * Advances through one or more opponent opening moves automatically.
+   * Returns the last opponent move that was applied (for animation).
+   * Null means opening is complete or no opponent move available.
+   */
+  function applyNextOpponentOpeningMove(): {
+    move: { from: Square; to: Square; promotion?: string };
+    nextIndex: number;
+    openingComplete: boolean;
+  } | null {
+    if (!opening) return null;
+    const { openingMoveIndex } = state;
+    if (openingMoveIndex >= opening.moves.length) return null;
+
+    const san = opening.moves[openingMoveIndex];
+    let appliedMove = null;
+    try {
+      appliedMove = chessRef.current.move(san);
+    } catch {
+      return null;
+    }
+    if (!appliedMove) return null;
+
+    const nextIndex = openingMoveIndex + 1;
+    const openingComplete = nextIndex >= opening.moves.length;
+    const lastValidFen = chessRef.current.fen();
+
+    setState(prev => ({
+      ...prev,
+      openingMoveIndex: nextIndex,
+      phase: openingComplete ? 'ENGINE_TURN' : 'OPENING_PHASE',
+      lastValidFen,
+      feedbackMessage: openingComplete ? 'Opening complete! Find the best moves.' : null,
+    }));
+
+    return {
+      move: uciToSquares(
+        `${appliedMove.from}${appliedMove.to}${appliedMove.promotion ?? ''}`
+      ),
+      nextIndex,
+      openingComplete,
+    };
+  }
+
   function handleOpeningMove(from: Square, to: Square, promotion?: string): PlayerMoveResult {
+    if (!opening) return { outcome: 'illegal' };
+
     const { openingMoveIndex, consecutiveMisses } = state;
     const expectedSan = opening.moves[openingMoveIndex];
 
-    // Attempt the move on a clone to see if it matches the expected SAN
+    // Try the move on a clone to validate it matches the expected SAN
     const clone = new Chess(chessRef.current.fen());
     let move = null;
     try {
@@ -130,18 +170,19 @@ export function useChessGame({
       setState(prev => ({
         ...prev,
         consecutiveMisses: newMisses,
-        feedbackMessage: `Wrong! Expected: ${expectedSan}. You have ${2 - newMisses} chance(s) left.`,
+        feedbackMessage: `Wrong! Expected: ${expectedSan}. ${2 - newMisses} chance(s) left.`,
       }));
       return { outcome: 'wrong_move' };
     }
 
-    // Apply the player's move to our engine
+    // Accept the player's move
     chessRef.current.move({ from, to, promotion: promotion as any });
     const newIndex = openingMoveIndex + 1;
-    const lastValidFen = chessRef.current.fen();
     const isComplete = newIndex >= opening.moves.length;
+    const lastValidFen = chessRef.current.fen();
 
     if (isComplete) {
+      // Opening done — transition to ENGINE_TURN for free play
       setState(prev => ({
         ...prev,
         openingMoveIndex: newIndex,
@@ -173,7 +214,7 @@ export function useChessGame({
       consecutiveMisses: 0,
       moveCount: prev.moveCount + 1,
       phase: nextComplete ? 'ENGINE_TURN' : 'OPENING_PHASE',
-      feedbackMessage: null,
+      feedbackMessage: nextComplete ? 'Opening complete! Now find the best moves.' : null,
       lastValidFen: newLastValidFen,
     }));
 
@@ -212,7 +253,7 @@ export function useChessGame({
       setState(prev => ({
         ...prev,
         consecutiveMisses: newMisses,
-        feedbackMessage: `Not the best move. One more chance!`,
+        feedbackMessage: `Not the best move (${topMove.uci}). One more chance!`,
       }));
       return { outcome: 'wrong_move' };
     }
@@ -248,32 +289,52 @@ export function useChessGame({
   // ─── Public API ───────────────────────────────────────────────────────────
 
   /**
-   * Called by the screen after the player drags a piece on the board.
-   * Returns what happened so the screen can react (undo board, trigger engine move, etc.)
+   * Called by the screen after the player drags a piece.
+   * Guards: only runs when it's the player's turn at the correct opening index.
    */
   const onPlayerMove = useCallback(
     async (from: Square, to: Square, promotion?: string): Promise<PlayerMoveResult> => {
       if (processingRef.current) return { outcome: 'illegal' };
-      if (state.phase !== 'OPENING_PHASE' && state.phase !== 'GAME_PHASE') {
-        return { outcome: 'illegal' };
-      }
-      processingRef.current = true;
-      try {
-        if (state.phase === 'OPENING_PHASE') {
-          return handleOpeningMove(from, to, promotion);
+
+      if (state.phase === 'OPENING_PHASE') {
+        // Extra guard: only allow if it's really the player's turn at this index
+        if (!isPlayerTurnAtIndex(state.openingMoveIndex, playerColor)) {
+          return { outcome: 'illegal' };
         }
-        return await handleGameMove(from, to, promotion);
-      } finally {
-        processingRef.current = false;
+        processingRef.current = true;
+        try {
+          return handleOpeningMove(from, to, promotion);
+        } finally {
+          processingRef.current = false;
+        }
       }
+
+      if (state.phase === 'GAME_PHASE') {
+        processingRef.current = true;
+        try {
+          return await handleGameMove(from, to, promotion);
+        } finally {
+          processingRef.current = false;
+        }
+      }
+
+      return { outcome: 'illegal' };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state],
   );
 
   /**
-   * Called by the screen after it has successfully animated the engine's opening reply.
-   * Triggers Stockfish to compute the next engine move when transitioning to GAME_PHASE.
+   * Plays the current opening move for the opponent (used when it's the opponent's turn
+   * at the start of Theory Mode with Black, or similar situations).
+   */
+  const playOpponentOpeningMove = useCallback(() => {
+    return applyNextOpponentOpeningMove();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.openingMoveIndex, opening]);
+
+  /**
+   * Called by the screen to trigger Stockfish's move during free play ENGINE_TURN.
    */
   const requestEngineMove = useCallback(async (): Promise<{
     from: Square;
@@ -295,18 +356,31 @@ export function useChessGame({
   }, [getBestMove]);
 
   const resetGame = useCallback(() => {
-    const newFen = buildStartingFen(opening, mode);
-    chessRef.current = new Chess(newFen);
+    chessRef.current = new Chess();
     setState({
-      phase: mode === 'play_through' ? 'OPENING_PHASE' : 'GAME_PHASE',
+      phase: mode === 'free' ? 'GAME_PHASE' : 'OPENING_PHASE',
       moveCount: 0,
       consecutiveMisses: 0,
       feedbackMessage: null,
       openingMoveIndex: 0,
-      lastValidFen: newFen,
-      startingFen: newFen,
+      lastValidFen: INITIAL_FEN,
+      startingFen: INITIAL_FEN,
     });
   }, [opening, mode]);
 
-  return { state, onPlayerMove, requestEngineMove, resetGame };
+  /** True when the opponent needs to play an opening move before the player can interact */
+  const isOpponentOpeningTurn =
+    mode === 'theory' &&
+    state.phase === 'OPENING_PHASE' &&
+    !!opening &&
+    !isPlayerTurnAtIndex(state.openingMoveIndex, playerColor);
+
+  return {
+    state,
+    onPlayerMove,
+    requestEngineMove,
+    resetGame,
+    playOpponentOpeningMove,
+    isOpponentOpeningTurn,
+  };
 }

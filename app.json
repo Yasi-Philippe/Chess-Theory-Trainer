@@ -25,11 +25,19 @@
     },
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "single"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-asset",
+        {
+          "assets": ["./assets/stockfish/stockfish.js.txt"]
+        }
+      ],
+      "expo-font"
     ],
+    "assetBundlePatterns": ["assets/**/*"],
     "experiments": {
       "typedRoutes": true
     }

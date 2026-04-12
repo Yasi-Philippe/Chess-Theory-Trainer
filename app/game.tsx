@@ -5,7 +5,9 @@ import {
   TouchableOpacity,
   Text,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import Chessboard from 'react-native-chessboard';
 import type { ChessboardRef } from 'react-native-chessboard';
@@ -16,34 +18,37 @@ import { MissIndicator } from '../src/components/MissIndicator/MissIndicator';
 import { useChessGame } from '../src/hooks/useChessGame';
 import { useStockfish } from '../src/hooks/useStockfish';
 import { useGameStore } from '../src/store/gameStore';
-import type { Opening, PlayerColor, OpeningMode } from '../src/types';
+import type { PlayerColor, Opening } from '../src/types';
 
-const BOARD_SIZE = Dimensions.get('window').width;
+const SCREEN_WIDTH = Dimensions.get('window').width;
 
-// Fallback setup so TypeScript is happy — router.replace guards against null in practice
-const FALLBACK_SETUP: { opening: Opening; color: PlayerColor; mode: OpeningMode } = {
-  opening: {
-    id: 'ruy_lopez',
-    name: 'Ruy López',
-    eco: 'C65',
-    color: 'white',
-    moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'],
-    description: '',
-  },
-  color: 'white',
-  mode: 'from_position',
+// Free-mode fallback (no opening needed)
+const FREE_MODE_FALLBACK = {
+  opening: null as Opening | null,
+  color: 'white' as PlayerColor,
+  mode: 'free' as const,
 };
 
 export default function GameScreen() {
   const router = useRouter();
-  const setup = useGameStore(state => state.setup) ?? FALLBACK_SETUP;
+  const insets = useSafeAreaInsets();
+  const setup = useGameStore(state => state.setup) ?? FREE_MODE_FALLBACK;
 
   const boardRef = useRef<ChessboardRef>(null);
+  // Tracks whether a board animation is in progress so we can block input
+  const animatingRef = useRef(false);
 
-  const { webviewRef, getBestMove, getTopMove, bridgeHtml, onWebViewMessage } =
+  const { webviewRef, getBestMove, getTopMove, htmlUri, onWebViewMessage, isEngineReady } =
     useStockfish();
 
-  const { state, onPlayerMove, requestEngineMove, resetGame } = useChessGame({
+  const {
+    state,
+    onPlayerMove,
+    requestEngineMove,
+    resetGame,
+    playOpponentOpeningMove,
+    isOpponentOpeningTurn,
+  } = useChessGame({
     opening: setup.opening,
     playerColor: setup.color,
     mode: setup.mode,
@@ -62,18 +67,21 @@ export default function GameScreen() {
   }, [state.phase]);
 
   /**
-   * Called when the board needs to show the engine's move.
-   * Fetches the best move from Stockfish (weighted random from top 10),
-   * then animates it on the board.
+   * Animate the engine's reply on the board, then update state.
    */
   const playEngineMove = useCallback(async () => {
-    const engineMove = await requestEngineMove();
-    if (engineMove) {
-      await boardRef.current?.move({ from: engineMove.from, to: engineMove.to });
+    animatingRef.current = true;
+    try {
+      const engineMove = await requestEngineMove();
+      if (engineMove) {
+        await boardRef.current?.move({ from: engineMove.from, to: engineMove.to });
+      }
+    } finally {
+      animatingRef.current = false;
     }
   }, [requestEngineMove]);
 
-  // Trigger engine move whenever phase becomes ENGINE_TURN
+  // Trigger Stockfish move whenever phase becomes ENGINE_TURN
   useEffect(() => {
     if (state.phase === 'ENGINE_TURN') {
       playEngineMove();
@@ -81,31 +89,58 @@ export default function GameScreen() {
   }, [state.phase]);
 
   /**
+   * When it's the opponent's turn in the opening (e.g. playing as Black,
+   * White hasn't moved yet), auto-play the opponent's opening move.
+   */
+  useEffect(() => {
+    if (!isOpponentOpeningTurn) return;
+
+    const timer = setTimeout(async () => {
+      animatingRef.current = true;
+      try {
+        const result = playOpponentOpeningMove();
+        if (result) {
+          await boardRef.current?.move({ from: result.move.from, to: result.move.to });
+        }
+      } finally {
+        animatingRef.current = false;
+      }
+    }, 400); // short delay so the board is ready
+
+    return () => clearTimeout(timer);
+  }, [isOpponentOpeningTurn, state.openingMoveIndex]);
+
+  /**
    * Intercept player moves from the board.
-   * The board has already applied the move visually — we validate it and
-   * call resetBoard if it was wrong.
    */
   const handleBoardMove = useCallback(
     async ({ move }: { move: Move; state: any }) => {
+      if (animatingRef.current) return;
+
       const from = move.from as Square;
       const to = move.to as Square;
       const promotion = move.promotion;
 
+      // Snapshot the last valid FEN before async processing can mutate state
+      const validFen = state.lastValidFen;
       const result = await onPlayerMove(from, to, promotion);
 
       if (result.outcome === 'wrong_move' || result.outcome === 'illegal') {
-        // Snap the board back to the last valid position
-        boardRef.current?.resetBoard(state.lastValidFen);
+        boardRef.current?.resetBoard(validFen);
         return;
       }
 
-      // For opening phase: the hook may have already computed the opponent's
-      // opening reply and returned it in engineMove
+      // Opening phase: board already shows player's move; animate opponent's reply
       if (result.engineMove && result.outcome === 'accepted') {
-        await boardRef.current?.move({
-          from: result.engineMove.from,
-          to: result.engineMove.to,
-        });
+        animatingRef.current = true;
+        try {
+          await boardRef.current?.move({
+            from: result.engineMove.from,
+            to: result.engineMove.to,
+          });
+        } finally {
+          animatingRef.current = false;
+        }
       }
     },
     [onPlayerMove, state.lastValidFen],
@@ -113,24 +148,44 @@ export default function GameScreen() {
 
   const handleReset = useCallback(() => {
     resetGame();
-    boardRef.current?.resetBoard(state.startingFen);
-  }, [resetGame, state.startingFen]);
+    boardRef.current?.resetBoard();
+  }, [resetGame]);
 
-  const isPlayerTurn =
-    state.phase === 'GAME_PHASE' || state.phase === 'OPENING_PHASE';
+  // gestureEnabled only when it's the human player's turn and engine is ready
+  const gestureEnabled =
+    isEngineReady &&
+    !animatingRef.current &&
+    (state.phase === 'GAME_PHASE' ||
+      (state.phase === 'OPENING_PHASE' && !isOpponentOpeningTurn));
+
+  const modeLabel = setup.mode === 'free' ? 'Free Mode' : 'Theory Mode';
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       {/* Hidden Stockfish WebView — zero-size, off-screen */}
-      <WebView
-        ref={webviewRef}
-        source={{ html: bridgeHtml }}
-        onMessage={onWebViewMessage}
-        style={styles.hiddenWebview}
-        javaScriptEnabled
-        domStorageEnabled
-        originWhitelist={['*']}
-      />
+      {htmlUri ? (
+        <WebView
+          ref={webviewRef}
+          source={{ uri: htmlUri }}
+          onMessage={onWebViewMessage}
+          onLoadStart={() => console.log('[WebView] load started')}
+          onLoadEnd={() => console.log('[WebView] load finished — waiting for readyok')}
+          onError={e => console.error('[WebView] error:', e.nativeEvent)}
+          style={styles.hiddenWebview}
+          javaScriptEnabled
+          domStorageEnabled
+          allowFileAccess
+          allowFileAccessFromFileURLs
+          originWhitelist={['*']}
+        />
+      ) : null}
+
+      {/* Back button row */}
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backChip}>
+          <Text style={styles.backChipText}>← {modeLabel}</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* HUD: opening name, score, phase */}
       <GameHUD
@@ -155,29 +210,38 @@ export default function GameScreen() {
       <View style={styles.boardWrapper}>
         <Chessboard
           ref={boardRef}
-          fen={state.startingFen}
-          boardSize={BOARD_SIZE}
+          boardSize={SCREEN_WIDTH}
           onMove={handleBoardMove}
-          gestureEnabled={isPlayerTurn}
+          gestureEnabled={gestureEnabled}
           colors={{
             black: '#b58863',
             white: '#f0d9b5',
           }}
+          withLetters={false}
+          withNumbers={false}
         />
       </View>
 
-      {/* Bottom controls */}
+      {/* Bottom controls — above Android nav bar */}
       <View style={styles.controls}>
         <TouchableOpacity style={styles.resetButton} onPress={handleReset}>
           <Text style={styles.controlText}>Restart</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.backButton}
+          style={styles.changeButton}
           onPress={() => router.back()}
         >
-          <Text style={styles.backTextStyle}>Change Opening</Text>
+          <Text style={styles.changeText}>Change Setup</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Engine loading overlay — shown until Stockfish sends readyok */}
+      {!isEngineReady && (
+        <View style={styles.engineOverlay}>
+          <ActivityIndicator size="large" color="#e94560" />
+          <Text style={styles.engineLoadingText}>Loading engine…</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -193,16 +257,30 @@ const styles = StyleSheet.create({
     position: 'absolute',
     opacity: 0,
   },
+  topBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  backChip: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#16213e',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  backChipText: {
+    color: '#8892a4',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   boardWrapper: {
     alignSelf: 'center',
-    marginVertical: 8,
   },
   controls: {
     flexDirection: 'row',
     gap: 12,
     paddingHorizontal: 16,
-    paddingVertical: 16,
-    marginTop: 'auto',
+    paddingVertical: 12,
   },
   resetButton: {
     flex: 1,
@@ -211,7 +289,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
   },
-  backButton: {
+  changeButton: {
     flex: 1,
     backgroundColor: '#16213e',
     borderRadius: 10,
@@ -222,8 +300,21 @@ const styles = StyleSheet.create({
     color: '#e0e0e0',
     fontWeight: '700',
   },
-  backTextStyle: {
+  changeText: {
     color: '#8892a4',
+    fontWeight: '600',
+  },
+  engineOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(26, 26, 46, 0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 16,
+    zIndex: 999,
+  },
+  engineLoadingText: {
+    color: '#8892a4',
+    fontSize: 15,
     fontWeight: '600',
   },
 });

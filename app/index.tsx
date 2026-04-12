@@ -12,14 +12,15 @@ export default function HomeScreen() {
       <View style={styles.hero}>
         <Text style={styles.title}>Chess Theory{'\n'}Trainer</Text>
         <Text style={styles.subtitle}>
-          Master openings by always finding{'\n'}the best move
+          Master openings in an interactive{'\n'}and engaging way
         </Text>
       </View>
 
       <View style={styles.features}>
-        <FeatureRow icon="♟" text="20+ openings for White & Black" />
+        <FeatureRow icon="♟" text="60+ openings for White & Black" />
         <FeatureRow icon="⚡" text="Powered by Stockfish engine" />
-        <FeatureRow icon="🎯" text="Play from position or through theory" />
+        <FeatureRow icon="📖" text="Theory Mode — follow opening lines" />
+        <FeatureRow icon="🎯" text="Free Mode — find the best move every turn" />
         <FeatureRow icon="📈" text="Score by consecutive correct moves" />
       </View>
 
@@ -69,7 +70,7 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   features: {
-    gap: 16,
+    gap: 12,
   },
   featureRow: {
     flexDirection: 'row',
@@ -80,12 +81,13 @@ const styles = StyleSheet.create({
     padding: 14,
   },
   featureIcon: {
-    fontSize: 24,
+    fontSize: 22,
   },
   featureText: {
     color: '#e0e0e0',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '500',
+    flex: 1,
   },
   startButton: {
     backgroundColor: '#e94560',
