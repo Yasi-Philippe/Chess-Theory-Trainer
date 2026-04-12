@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "Chess Theory Trainer",
+    "slug": "chess-theory-trainer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.jpg",
+    "scheme": "chesstrainer",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/images/splash.jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a1a2e"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.jpg",
+        "backgroundColor": "#1a1a2e"
+      },
+      "package": "com.chesstrainer.app"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.chesstrainer.app"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-asset",
+        {
+          "assets": ["./assets/stockfish/stockfish.js.txt"]
+        }
+      ],
+      "expo-font"
+    ],
+    "assetBundlePatterns": ["assets/**/*"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

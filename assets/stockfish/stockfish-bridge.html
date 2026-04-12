@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Stockfish Bridge</title>
+</head>
+<body>
+<script>
+  /**
+   * Stockfish UCI bridge for React Native WebView.
+   *
+   * Communication protocol:
+   *   RN → WebView: postMessage(uciCommand: string)
+   *   WebView → RN:  ReactNativeWebView.postMessage(uciResponse: string)
+   *
+   * The engine is loaded via a <script> tag injected at runtime by the
+   * useStockfish hook (the stockfish.js src is passed as a query param or
+   * injected via injectedJavaScript). This file handles the message bridge.
+   */
+
+  let engine = null;
+
+  function initEngine() {
+    if (typeof STOCKFISH === 'function') {
+      engine = STOCKFISH();
+    } else if (typeof Worker !== 'undefined') {
+      engine = new Worker('stockfish.js');
+    } else {
+      sendToRN('ERROR: Cannot initialize Stockfish');
+      return;
+    }
+
+    engine.onmessage = function (event) {
+      const msg = typeof event === 'object' && event.data ? event.data : String(event);
+      sendToRN(msg);
+    };
+
+    // Initialise UCI
+    engine.postMessage('uci');
+    engine.postMessage('isready');
+  }
+
+  function sendToRN(msg) {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(String(msg));
+    }
+  }
+
+  // Messages coming FROM React Native
+  function handleRNMessage(event) {
+    try {
+      const data = typeof event === 'string' ? event : event.data;
+      if (!engine) {
+        sendToRN('ERROR: Engine not ready');
+        return;
+      }
+      engine.postMessage(data);
+    } catch (e) {
+      sendToRN('ERROR: ' + e.message);
+    }
+  }
+
+  // Android uses document message event; iOS uses window
+  document.addEventListener('message', handleRNMessage);
+  window.addEventListener('message', handleRNMessage);
+
+  // Auto-init when the script tag for stockfish.js has loaded
+  window.addEventListener('load', function () {
+    initEngine();
+  });
+</script>
+
+<!--
+  stockfish.js is injected dynamically by the useStockfish hook via
+  injectedJavaScriptBeforeContentLoaded so the engine is available
+  before this script runs.
+-->
+</body>
+</html>
