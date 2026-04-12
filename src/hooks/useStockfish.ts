@@ -4,7 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
 import { StockfishMove, WDL, PlayerColor } from '../types';
 
-const ANALYSIS_DEPTH = 15;
+const ANALYSIS_DEPTH = 8;
 const MULTI_PV = 10;
 
 interface UseStockfishReturn {
@@ -66,71 +66,69 @@ export function weightedRandomMove(moves: StockfishMove[]): StockfishMove {
 
 // ─── Bridge HTML builder ──────────────────────────────────────────────────────
 
+// This Stockfish build (niklasf/stockfish.js, Emscripten-compiled) is designed
+// as a Web Worker. It does NOT expose a STOCKFISH() constructor. Instead:
+//   • Input:  it sets window.onmessage as its UCI command receiver
+//   • Output: it calls postMessage(line) to emit UCI responses
+//
+// Bridge strategy:
+//   1. Override window.postMessage before the script loads → captures engine output
+//   2. After the script executes, window.onmessage is the engine's input handler
+//   3. RN→WebView commands (dispatched on document by react-native-webview)
+//      are forwarded to window.onmessage({data: cmd})
 function buildBridgeHtml(engineScript: string): string {
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"/></head>
 <body>
 <script>
-  var engine = null;
-  var msgQueue = [];
-
   function sendToRN(msg) {
     if (window.ReactNativeWebView) {
       window.ReactNativeWebView.postMessage(String(msg));
     }
   }
 
-  function initEngine() {
-    try {
-      sendToRN('LOG:initEngine running, STOCKFISH type=' + typeof STOCKFISH);
-      if (typeof STOCKFISH !== 'function') {
-        sendToRN('ENGINE_ERROR:STOCKFISH not a function');
-        return;
-      }
-      engine = STOCKFISH();
-      sendToRN('LOG:engine object created');
-      engine.onmessage = function(e) {
-        var msg = (typeof e === 'object' && e.data) ? e.data : String(e);
-        sendToRN(msg);
-      };
-      engine.postMessage('uci');
-      engine.postMessage('setoption name UCI_ShowWDL value true');
-      engine.postMessage('setoption name MultiPV value ${MULTI_PV}');
-      engine.postMessage('isready');
-      for (var i = 0; i < msgQueue.length; i++) {
-        engine.postMessage(msgQueue[i]);
-      }
-      msgQueue = [];
-    } catch(err) {
-      sendToRN('ENGINE_ERROR:' + err.message);
-    }
-  }
+  // Intercept the engine's UCI output — the script calls postMessage(line)
+  // which in Worker context posts to the parent; here we reroute it to RN.
+  window.postMessage = function(msg) {
+    if (typeof msg === 'string') sendToRN(msg);
+  };
 
-  function handleMsg(event) {
-    var data = (typeof event === 'string') ? event : event.data;
-    if (!engine) {
-      // Engine not ready yet — queue the command for after init
-      msgQueue.push(data);
-      return;
-    }
-    engine.postMessage(data);
-  }
+  var cmdQueue = [];
+  var engineReady = false;
 
-  document.addEventListener('message', handleMsg);
-  window.addEventListener('message', handleMsg);
+  // React Native → WebView: react-native-webview dispatches a 'message' event
+  // on the document when webviewRef.postMessage(cmd) is called from RN.
+  document.addEventListener('message', function(event) {
+    var cmd = typeof event === 'string' ? event : event.data;
+    if (typeof cmd !== 'string') return;
+    if (!engineReady) { cmdQueue.push(cmd); return; }
+    window.onmessage && window.onmessage({data: cmd});
+  });
+
   window.onerror = function(msg, src, line) {
-    sendToRN('JS_ERROR:' + msg + ' (' + src + ':' + line + ')');
+    sendToRN('JS_ERROR:' + msg + ' (' + (src || '') + ':' + line + ')');
   };
 <\/script>
 <script>
 ${engineScript}
 <\/script>
 <script>
-  // Invoke initEngine here — after the engine script above has fully executed
-  // and STOCKFISH is guaranteed to be defined. The load event is unreliable
-  // in the Android file:// WebView context.
-  initEngine();
+  // The engine script has now executed and set window.onmessage.
+  if (typeof window.onmessage === 'function') {
+    engineReady = true;
+    sendToRN('LOG:Engine loaded, sending UCI init');
+    window.onmessage({data: 'uci'});
+    window.onmessage({data: 'setoption name UCI_ShowWDL value true'});
+    window.onmessage({data: 'setoption name MultiPV value ${MULTI_PV}'});
+    window.onmessage({data: 'isready'});
+    for (var i = 0; i < cmdQueue.length; i++) {
+      window.onmessage({data: cmdQueue[i]});
+    }
+    cmdQueue = [];
+  } else {
+    sendToRN('ENGINE_ERROR:window.onmessage not set after engine script');
+  }
 <\/script>
 </body>
 </html>`;

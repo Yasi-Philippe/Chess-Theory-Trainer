@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useEffect } from 'react';
+import React, { useRef, useCallback, useEffect, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -35,8 +35,15 @@ export default function GameScreen() {
   const setup = useGameStore(state => state.setup) ?? FREE_MODE_FALLBACK;
 
   const boardRef = useRef<ChessboardRef>(null);
-  // Tracks whether a board animation is in progress so we can block input
+  // Ref for synchronous animation guard (used inside callbacks without stale closure risk)
   const animatingRef = useRef(false);
+  // State mirror so gestureEnabled re-evaluates after animations complete
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  function setAnimating(value: boolean) {
+    animatingRef.current = value;
+    setIsAnimating(value);
+  }
 
   const { webviewRef, getBestMove, getTopMove, htmlUri, onWebViewMessage, isEngineReady } =
     useStockfish();
@@ -70,14 +77,14 @@ export default function GameScreen() {
    * Animate the engine's reply on the board, then update state.
    */
   const playEngineMove = useCallback(async () => {
-    animatingRef.current = true;
+    setAnimating(true);
     try {
       const engineMove = await requestEngineMove();
       if (engineMove) {
         await boardRef.current?.move({ from: engineMove.from, to: engineMove.to });
       }
     } finally {
-      animatingRef.current = false;
+      setAnimating(false);
     }
   }, [requestEngineMove]);
 
@@ -96,14 +103,14 @@ export default function GameScreen() {
     if (!isOpponentOpeningTurn) return;
 
     const timer = setTimeout(async () => {
-      animatingRef.current = true;
+      setAnimating(true);
       try {
         const result = playOpponentOpeningMove();
         if (result) {
           await boardRef.current?.move({ from: result.move.from, to: result.move.to });
         }
       } finally {
-        animatingRef.current = false;
+        setAnimating(false);
       }
     }, 400); // short delay so the board is ready
 
@@ -121,25 +128,29 @@ export default function GameScreen() {
       const to = move.to as Square;
       const promotion = move.promotion;
 
-      // Snapshot the last valid FEN before async processing can mutate state
+      // Snapshot the last valid FEN before async processing can mutate state.
+      // We use a local variable captured before the await so it's never stale.
       const validFen = state.lastValidFen;
       const result = await onPlayerMove(from, to, promotion);
 
       if (result.outcome === 'wrong_move' || result.outcome === 'illegal') {
-        boardRef.current?.resetBoard(validFen);
+        // Defer resetBoard to the next task so it always runs AFTER the board
+        // library's own synchronous setBoard call inside moveProgrammatically.
+        // Without the delay, React 18 batching can let the library's update win.
+        setTimeout(() => boardRef.current?.resetBoard(validFen), 0);
         return;
       }
 
       // Opening phase: board already shows player's move; animate opponent's reply
       if (result.engineMove && result.outcome === 'accepted') {
-        animatingRef.current = true;
+        setAnimating(true);
         try {
           await boardRef.current?.move({
             from: result.engineMove.from,
             to: result.engineMove.to,
           });
         } finally {
-          animatingRef.current = false;
+          setAnimating(false);
         }
       }
     },
@@ -151,10 +162,11 @@ export default function GameScreen() {
     boardRef.current?.resetBoard();
   }, [resetGame]);
 
-  // gestureEnabled only when it's the human player's turn and engine is ready
+  // gestureEnabled only when it's the human player's turn and engine is ready.
+  // Uses isAnimating (state) not animatingRef so React re-renders when it clears.
   const gestureEnabled =
     isEngineReady &&
-    !animatingRef.current &&
+    !isAnimating &&
     (state.phase === 'GAME_PHASE' ||
       (state.phase === 'OPENING_PHASE' && !isOpponentOpeningTurn));
 
@@ -235,6 +247,14 @@ export default function GameScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Stockfish thinking banner */}
+      {isEngineReady && state.phase === 'ENGINE_TURN' && (
+        <View style={styles.thinkingBanner}>
+          <ActivityIndicator size="small" color="#e94560" />
+          <Text style={styles.thinkingText}>Stockfish is thinking…</Text>
+        </View>
+      )}
+
       {/* Engine loading overlay — shown until Stockfish sends readyok */}
       {!isEngineReady && (
         <View style={styles.engineOverlay}>
@@ -302,6 +322,19 @@ const styles = StyleSheet.create({
   },
   changeText: {
     color: '#8892a4',
+    fontWeight: '600',
+  },
+  thinkingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 6,
+    backgroundColor: '#16213e',
+  },
+  thinkingText: {
+    color: '#8892a4',
+    fontSize: 13,
     fontWeight: '600',
   },
   engineOverlay: {

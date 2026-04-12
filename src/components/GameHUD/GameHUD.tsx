@@ -23,7 +23,7 @@ export function GameHUD({ gameState, feedbackMessage }: GameHUDProps) {
   }
 
   const feedbackColor =
-    feedbackMessage?.startsWith('Best') || feedbackMessage?.startsWith('Opening')
+    feedbackMessage?.startsWith('Best') || feedbackMessage?.startsWith('Opening') || feedbackMessage?.endsWith('best move!')
       ? '#4caf50'
       : feedbackMessage?.includes('over') || feedbackMessage?.includes('twice')
       ? '#f44336'
