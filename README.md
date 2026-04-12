@@ -386,7 +386,7 @@ npx expo start --lan
 
 > **Do not use `--clear` unless debugging a cache issue.** It wipes Metro's bundle cache and forces a full 60–90 second rebundle + Hermes recompilation on the device. Without `--clear`, subsequent starts use the cache and load in seconds.
 
-**WSL2 users (Windows):** Metro binds to the WSL2 internal IP, which Android devices cannot reach directly. See `DEV_NOTES.txt` in the repo root for the required port-forwarding commands that must be re-run after each WSL2 reboot.
+**WSL2 users (Windows):** Metro binds to the WSL2 internal IP, which Android devices cannot reach directly. You need to set up a port proxy from your Windows LAN IP to the WSL2 internal IP (`netsh interface portproxy`) and re-run it after each WSL2 reboot since the internal IP changes.
 
 ---
 
