@@ -88,12 +88,16 @@ export default function GameScreen() {
     }
   }, [requestEngineMove]);
 
-  // Trigger Stockfish move whenever phase becomes ENGINE_TURN
+  // Trigger Stockfish move whenever phase becomes ENGINE_TURN.
+  // Also depends on isEngineReady: when playing as Black in free mode the phase
+  // starts as ENGINE_TURN before the engine is loaded, so we must re-fire once
+  // the engine becomes ready (otherwise the commands are sent to a null ref and
+  // the analysis promise never resolves).
   useEffect(() => {
-    if (state.phase === 'ENGINE_TURN') {
+    if (state.phase === 'ENGINE_TURN' && isEngineReady) {
       playEngineMove();
     }
-  }, [state.phase]);
+  }, [state.phase, isEngineReady]);
 
   /**
    * When it's the opponent's turn in the opening (e.g. playing as Black,

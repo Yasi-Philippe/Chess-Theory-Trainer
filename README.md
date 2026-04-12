@@ -1,6 +1,6 @@
 # Chess Theory Trainer
 
-A mobile-first chess training app (Android) focused on opening theory. Pick an opening, play against Stockfish — but you must always find the engine's best move. Miss twice in a row and the game ends. Your score is the number of correct moves you strung together.
+A mobile-first chess training app (Android) focused on opening theory. Pick an opening, play against Stockfish — but you must always find one of the engine's top moves. Miss twice in a row and the game ends. Your score is the number of correct moves you strung together.
 
 ---
 
@@ -30,10 +30,10 @@ The core loop:
 
 1. Pick a color (White or Black).
 2. Choose a training mode (see below).
-3. Against Stockfish, you must **always play the engine's top move**. There are no alternatives.
+3. Against Stockfish, you must play **one of the engine's top 3 best moves**. If the position is winning (best move WDL > 50%), only moves that keep you winning are accepted.
 4. Stockfish responds by picking randomly from its **top 10 candidate moves**, weighted by win probability — stronger moves appear more often, but there is variety.
-5. Miss the best move once: you get a warning and one more chance.  
-   Miss twice in a row: game over.
+5. Miss a top move once: you get a warning ("Not the best move. One more chance!"). The board reverts and you try again from the same position.
+   Miss twice in a row: game over, the best move is revealed.
 6. **Score = number of correct moves** before two consecutive misses.
 
 ---
@@ -41,10 +41,10 @@ The core loop:
 ## Training Modes
 
 ### Theory Mode
-Select an opening (e.g. Ruy López, Sicilian Najdorf). Starting from move 1, both you and the opponent follow the exact theoretical line. Once the theory ends, free play begins: you must find Stockfish's best move every turn.
+Select an opening (e.g. Ruy López, Sicilian Najdorf). Starting from move 1, both you and the opponent follow the exact theoretical line. Once the theory ends, free play begins: you must find one of Stockfish's top moves every turn.
 
 ### Free Mode
-No opening selection required. Start from the initial position and play directly against Stockfish — every move must be the engine's top choice from move 1 onwards. No theory to follow.
+No opening selection required. Start from the initial position and play directly against Stockfish from move 1 onwards. When playing as Black, Stockfish automatically makes White's first move before you interact.
 
 ---
 
@@ -53,11 +53,16 @@ No opening selection required. Start from the initial position and play directly
 - **65+ curated openings** across all major ECO families (A–E), for both White and Black
 - **Searchable opening picker** — filter by name, ECO code, or description
 - **Two training modes** — Theory (follow theory + free play) and Free (Stockfish from move 1)
+- **Top-3 move acceptance** — any of the engine's top 3 moves is accepted; rank shown ("Best move!", "2nd best move!", "3rd best move!")
+- **Win-probability filter** — in winning positions, only moves that maintain the advantage are accepted
 - **Stockfish fully offline** — engine bundled with the app, no internet required
+- **Prefetch optimisation** — after Stockfish moves, the engine immediately computes the player's top-3 valid moves and its own reply to each in the background; validation and engine response are instant when the player moves
 - **Loading overlay** — spinner shows until Stockfish sends `readyok`; gestures are locked until then
-- **Turn-aware Theory Mode** — when playing as Black, White's first opening moves auto-play before you interact
+- **Thinking banner** — activity indicator shown while Stockfish is computing its reply
+- **Turn-aware Theory Mode** — when playing as Black, White's opening moves auto-play before you interact
+- **Castling move hints** — tapping the king shows dots on the castling target squares
 - Top-10 multi-PV analysis with **WDL-weighted random selection** for engine replies
-- Move count score + rating label on game over (Beginner → Grandmaster)
+- Move count score + rating label on game over
 - Full game state machine: Opening Phase → Game Phase → Engine Turn → Game Over
 - **Safe area insets** — controls sit above the Android navigation bar
 - Dark-themed UI designed for mobile portrait screens
@@ -72,9 +77,8 @@ No opening selection required. Start from the initial position and play directly
 | Navigation | expo-router (file-based) | 6.x |
 | Chess board | react-native-chessboard | 0.1.2 |
 | Chess logic | chess.js | 1.3.x |
-| Engine | Stockfish (asm.js, bundled offline) | 10.x |
+| Engine | Stockfish (Emscripten/asm.js, bundled offline) | 10.x |
 | Global state | zustand | 5.x |
-| Styling | NativeWind (Tailwind for RN) | 4.x |
 | Language | TypeScript | 5.x |
 
 ---
@@ -99,7 +103,7 @@ Chess-Theory-Trainer/
 │   │
 │   ├── hooks/
 │   │   ├── useStockfish.ts       # Offline Stockfish bridge + weighted move selector
-│   │   └── useChessGame.ts       # Game state machine, validation, opening replay
+│   │   └── useChessGame.ts       # Game state machine, validation, prefetch, opening replay
 │   │
 │   ├── store/
 │   │   └── gameStore.ts          # zustand store — passes setup between screens
@@ -116,7 +120,8 @@ Chess-Theory-Trainer/
 │       └── stockfish.js.txt      # Stockfish 10 asm.js build (1.5 MB, bundled offline)
 │
 ├── app.json                      # Expo config (SDK 54, assets registration)
-├── babel.config.js               # NativeWind jsxImportSource + reanimated plugin
+├── metro.config.js               # Registers .txt as a Metro asset extension
+├── babel.config.js               # Reanimated plugin
 └── tsconfig.json
 ```
 
@@ -126,15 +131,23 @@ Chess-Theory-Trainer/
 
 ### Stockfish Integration
 
-Stockfish cannot run natively in React Native JavaScript. The solution is a **hidden WebView** that acts as a sandboxed UCI engine environment.
+Stockfish cannot run natively in React Native JavaScript. The solution is a **hidden WebView** (0×0, off-screen) that acts as a sandboxed UCI engine environment.
+
+The bundled Stockfish build is an **Emscripten/Web Worker-style** binary. It does not expose a `STOCKFISH()` constructor. Instead:
+- It sets `window.onmessage` as its UCI command receiver
+- It calls `window.postMessage(line)` to emit UCI responses
+
+**Bridge strategy:**
 
 ```
 React Native (game.tsx)
       │
-      │  postMessage(uciCommand)
+      │  webviewRef.postMessage(uciCommand)
       ▼
-  WebView (0×0, invisible)
-  └─ stockfish.js  ← inlined from assets/stockfish/stockfish.js.txt (offline)
+  WebView (0×0, invisible, loaded from file:// URI)
+  ├─ overrides window.postMessage → forwards output to ReactNativeWebView.postMessage
+  ├─ document.addEventListener('message') → forwards RN commands to window.onmessage
+  └─ stockfish.js (Emscripten build, 1.5 MB, fully inline)
       │
       │  ReactNativeWebView.postMessage(uciResponse)
       ▼
@@ -144,16 +157,15 @@ React Native (useStockfish hook)
 **Offline loading flow** (`useStockfish.ts`):
 
 1. On mount: `Asset.loadAsync(require('.../stockfish.js.txt'))` — Expo copies the file to the app's local cache
-2. `FileSystem.readAsStringAsync(localUri)` — reads the 1.5 MB asm.js engine into a string
-3. The string is injected as an inline `<script>` block inside the bridge HTML
-4. The WebView renders with the fully self-contained HTML — no network request ever
-5. When the engine sends `readyok`, `isEngineReady` is set to `true` and the loading overlay clears
+2. `FileSystem.readAsStringAsync(localUri)` — reads the 1.5 MB engine into a string
+3. The string is embedded as an inline `<script>` inside the bridge HTML, which is written to `FileSystem.cacheDirectory`
+4. The WebView loads the HTML from a `file://` URI — no network request ever
+5. Once the engine sends `readyok`, `isEngineReady` flips to `true` and the loading overlay clears
 
-**`useStockfish` hook**:
-- Exposes `getBestMove(fen)` → `MultiPV 10` + `UCI_ShowWDL true`, returns top 10 moves
-- Exposes `getTopMove(fen)` → `MultiPV 1`, returns only the best move (used to validate player moves)
-- Parses `info depth … multipv N score cp X wdl W D L pv MOVE` lines from the engine
-- Promise-based queue: `go depth` is sent, result resolved on `bestmove` response
+**`useStockfish` hook:**
+- `getBestMove(fen)` → `MultiPV 10` + `UCI_ShowWDL true` at depth 8, returns top 10 moves
+- Parses `info depth … multipv N score cp X wdl W D L pv MOVE` lines
+- Promise-based: `go depth` sent, result resolved on `bestmove` response
 
 **Weighted random selection** (`weightedRandomMove`):
 ```
@@ -161,7 +173,6 @@ win_probability(move) = wdl.win / (wdl.win + wdl.draw + wdl.loss)
 weight(move)          = max(win_probability, 0.01)
 selected              = weighted random draw over all 10 candidates
 ```
-A move with 60% win probability gets exactly 2× the selection chance of one with 30%.
 
 ---
 
@@ -173,15 +184,37 @@ Maintains a `chess.js` instance as the authoritative game state, separate from t
 
 | Export | Description |
 |---|---|
-| `onPlayerMove(from, to, promotion?)` | Validates the player's move; returns `'accepted'`, `'wrong_move'`, or `'illegal'`. Guards against out-of-turn moves. |
-| `requestEngineMove()` | Calls Stockfish, picks a weighted-random move from top 10, applies it, returns `{from, to}` for board animation. |
-| `playOpponentOpeningMove()` | Advances one opponent theory move; used when the opponent must move before the player can interact (e.g. playing as Black). |
-| `resetGame()` | Resets chess.js and all state to the initial position. |
-| `isOpponentOpeningTurn` | `true` when Theory Mode + Black + opponent has not yet played their first theory move. |
+| `onPlayerMove(from, to, promotion?)` | Validates the player's move against the prefetched top-3; returns `'accepted'`, `'wrong_move'`, or `'illegal'` |
+| `requestEngineMove()` | Uses precomputed engine reply if available (instant); otherwise queries Stockfish live. Applies move and triggers next prefetch. |
+| `playOpponentOpeningMove()` | Advances one opponent theory move; used in Theory Mode when opponent must move first |
+| `resetGame()` | Resets chess.js and all state to the initial position |
+| `isOpponentOpeningTurn` | `true` when Theory Mode + opponent must move before the player can interact |
 
-**Turn enforcement in Theory Mode:**
+**Move validation (Game Phase):**
 
-Opening moves alternate White/Black starting from index 0. A helper `isPlayerTurnAtIndex(index, color)` determines if the player or opponent should move. When `isOpponentOpeningTurn` is `true`, `game.tsx` fires a `setTimeout(400ms)` to auto-animate the opponent's move before enabling player input.
+```
+getBestMove(fen, MultiPV=10)
+         │
+         ▼
+  computeAcceptable(top10):
+    top3 = top10[0..2]
+    if winProb(top3[0]) > 0.5:          ← winning position
+      filter: only moves where winProb >= 0.5
+    else:
+      accept all of top3
+         │
+         ▼
+  player's move ∈ acceptable? → accepted (rank label: "Best move!" / "2nd best!" / "3rd best!")
+                               → wrong_move (miss counter++)
+```
+
+**Prefetch system:**
+
+After Stockfish makes its move, `startPrefetch(newFen)` runs in the background:
+1. Computes the player's top-3 acceptable moves for the new position
+2. For each of those moves, pre-computes the engine's best reply
+
+When the player moves, validation and engine response are served from cache — **zero waiting time** in the common case. If the player moves before prefetch completes, the system falls back to a live Stockfish query.
 
 **Game state machine:**
 
@@ -197,30 +230,32 @@ Opening moves alternate White/Black starting from index 0. A helper `isPlayerTur
                          │
                          ▼
                ┌─────────────────┐
-               │   GAME_PHASE    │◄────────────────────────┐
-               │  Find best move │                         │
-               └────────┬────────┘                         │
-                        │                                  │
-              ┌─────────▼──────────┐                       │
-              │ player move valid? │                       │
-              └──┬─────────────────┘                       │
-                 │ yes                 no → miss++          │
-                 │                    ├─ misses < 2: retry  │
-                 │                    └─ misses = 2 ──► GAME_OVER
+               │   GAME_PHASE    │◄──────────────────────┐
+               │  Find top move  │                       │
+               └────────┬────────┘                       │
+                        │                                │
+              ┌─────────▼──────────┐                     │
+              │ move in top-3?     │                     │
+              └──┬─────────────────┘                     │
+                 │ yes                 no → miss++        │
+                 │                    ├─ misses < 2: board reverts, retry
+                 │                    └─ misses = 2 ──► GAME_OVER (best move revealed)
                  ▼
          ┌──────────────┐
          │ ENGINE_TURN  │ ── Stockfish picks from top 10 ──► board animates
          └──────┬───────┘
-                └─────────────────────────────────────────►(back to GAME_PHASE)
+                └───────────────────────────────────────►(back to GAME_PHASE)
 ```
 
-**Miss tracking:** `consecutiveMisses` resets to 0 on every correct move. Two consecutive wrong moves triggers `GAME_OVER`.
+**Miss behaviour:**
+- First miss: "Not the best move. One more chance!" — board reverts, no hint given
+- Second consecutive miss: "Game over! Best move was [move]." — game ends
 
 ---
 
 ### Board Integration
 
-`react-native-chessboard` manages its own internal chess state and does not re-render when the `fen` prop changes after mount. Communication happens exclusively through `ChessboardRef`:
+`react-native-chessboard` manages its own internal chess state. Communication happens exclusively through `ChessboardRef`:
 
 | Ref method | When used |
 |---|---|
@@ -229,7 +264,9 @@ Opening moves alternate White/Black starting from index 0. A helper `isPlayerTur
 
 The **source-of-truth FEN** lives in `useChessGame`'s `chess.js` instance. The board is a display + gesture input layer only.
 
-**Animation guard:** An `animatingRef` flag is set during any `ref.move()` or `ref.resetBoard()` call. While `true`, `gestureEnabled` is forced to `false` and `onPlayerMove` returns `'illegal'` immediately, preventing race conditions.
+**Wrong-move revert:** `resetBoard(validFen)` is deferred with `setTimeout(..., 0)` to ensure it runs after the board library's own synchronous `setBoard` call, preventing React 18 batching from causing the wrong state to win.
+
+**Animation guard:** `animatingRef` (mutable ref) + `isAnimating` (useState) are kept in sync via a `setAnimating()` helper. `gestureEnabled` reads from the state value so React re-evaluates it after animations complete.
 
 ---
 
@@ -331,7 +368,7 @@ Each opening stores `moves[]` in SAN notation (both sides, in order). Adding a n
 
 - Node.js 20+
 - [Expo CLI](https://docs.expo.dev/get-started/installation/) (`npm install -g expo`)
-- Android device or emulator
+- Android device or emulator with [Expo Go](https://play.google.com/store/apps/details?id=host.exp.exponent)
 
 **Install dependencies**
 
@@ -343,12 +380,13 @@ npm install
 **Start the development server**
 
 ```bash
-# On local network (recommended for physical device)
-npx expo start --host lan
-
-# Or via tunnel if on different network
-npx expo start --tunnel
+# Recommended for physical device on the same Wi-Fi network
+npx expo start --lan
 ```
+
+> **Do not use `--clear` unless debugging a cache issue.** It wipes Metro's bundle cache and forces a full 60–90 second rebundle + Hermes recompilation on the device. Without `--clear`, subsequent starts use the cache and load in seconds.
+
+**WSL2 users (Windows):** Metro binds to the WSL2 internal IP, which Android devices cannot reach directly. See `DEV_NOTES.txt` in the repo root for the required port-forwarding commands that must be re-run after each WSL2 reboot.
 
 ---
 
@@ -358,19 +396,12 @@ npx expo start --tunnel
 
 1. Install [Expo Go](https://play.google.com/store/apps/details?id=host.exp.exponent) on your Android device
 2. Make sure your phone and computer are on the same Wi-Fi network
-3. Run `npx expo start --host lan`
+3. Run `npx expo start --lan`
 4. Scan the QR code shown in the terminal with the Expo Go app
 
-> **Note:** On the first launch after install, the engine takes 1–3 seconds to load. A spinner overlay shows until Stockfish is ready.
+> **Note:** On the first launch, the Stockfish engine takes a few seconds to initialise. A spinner overlay is shown until the engine is ready; gestures are disabled until then.
 
-**Option B — Development build (more reliable WebView behaviour)**
-
-```bash
-npx expo install expo-dev-client
-npx expo run:android
-```
-
-**Option C — Production APK (EAS Build)**
+**Option B — Production APK (EAS Build)**
 
 ```bash
 npm install -g eas-cli
@@ -384,5 +415,6 @@ eas build --platform android --profile preview
 | Item | Status | Notes |
 |---|---|---|
 | **Board flip for Black** | Not implemented | `react-native-chessboard` v0.1.x has no `boardOrientation` prop. Rotating the view 180° breaks GestureHandler `translationX/Y` (screen-relative deltas don't invert). Playing as Black still shows the board from White's perspective. |
-| **Piece scale on pickup** | By design | The board library scales pieces to 1.2× when you drag them. This is hardcoded in the library's `Piece` component and cannot be disabled via props. |
+| **Castling dots (node_modules patch)** | Patched in source | The library's `onSelectPiece` used SAN move strings (`'O-O'`) which never matched target square names. Fixed by switching to `chess.moves({ verbose: true })` in `node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx`. This patch is lost on `npm install` — use `patch-package` to make it permanent if needed. |
+| **Piece scale on pickup** | By design | The board library scales pieces to 1.2× when dragging. This is hardcoded in the library's `Piece` component and cannot be disabled via props. |
 | **iOS support** | Untested | No iOS-specific code; should run via Expo Go with no changes. |
