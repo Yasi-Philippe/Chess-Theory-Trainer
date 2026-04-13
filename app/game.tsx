@@ -63,14 +63,17 @@ export default function GameScreen() {
     getTopMove,
   });
 
-  // Navigate to game-over when game ends
+  // Navigate to game-over when game ends.
+  // Use a 1.5 s delay so the best-move highlight is visible before leaving.
   useEffect(() => {
-    if (state.phase === 'GAME_OVER') {
+    if (state.phase !== 'GAME_OVER') return;
+    const timer = setTimeout(() => {
       router.push({
         pathname: '/game-over',
         params: { score: String(state.moveCount) },
       });
-    }
+    }, 1500);
+    return () => clearTimeout(timer);
   }, [state.phase]);
 
   /**
@@ -138,10 +141,16 @@ export default function GameScreen() {
       const result = await onPlayerMove(from, to, promotion);
 
       if (result.outcome === 'wrong_move' || result.outcome === 'illegal') {
-        // Defer resetBoard to the next task so it always runs AFTER the board
-        // library's own synchronous setBoard call inside moveProgrammatically.
-        // Without the delay, React 18 batching can let the library's update win.
+        // Revert the board first (deferred to beat React 18 batching).
         setTimeout(() => boardRef.current?.resetBoard(validFen), 0);
+        // On 2nd miss: highlight the best move from/to squares after the board
+        // has reverted, giving the player a visual cue before game-over navigation.
+        if (result.bestMove) {
+          setTimeout(() => {
+            boardRef.current?.highlight({ square: result.bestMove!.from, color: '#f6f669aa' });
+            boardRef.current?.highlight({ square: result.bestMove!.to,   color: '#baca44aa' });
+          }, 50);
+        }
         return;
       }
 

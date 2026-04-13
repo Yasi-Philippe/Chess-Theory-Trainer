@@ -14,6 +14,7 @@ export interface PlayerMoveResult {
   engineMove?: { from: Square; to: Square; promotion?: string };
   gameOver?: boolean;
   gameOverReason?: 'two_misses' | 'completed';
+  bestMove?: { from: Square; to: Square };
 }
 
 interface UseChessGameParams {
@@ -238,13 +239,19 @@ export function useChessGame({
     if (!move || move.san !== expectedSan) {
       const newMisses = consecutiveMisses + 1;
       if (newMisses >= 2) {
+        const bestVerbose = new Chess(chessRef.current.fen())
+          .moves({ verbose: true })
+          .find((m: any) => m.san === expectedSan);
+        const bestMove = bestVerbose
+          ? { from: bestVerbose.from as Square, to: bestVerbose.to as Square }
+          : undefined;
         setState(prev => ({
           ...prev,
           consecutiveMisses: newMisses,
           phase: 'GAME_OVER',
-          feedbackMessage: `Game over! The correct move was ${expectedSan}.`,
+          feedbackMessage: 'Game over!',
         }));
-        return { outcome: 'wrong_move', gameOver: true, gameOverReason: 'two_misses' };
+        return { outcome: 'wrong_move', gameOver: true, gameOverReason: 'two_misses', bestMove };
       }
       setState(prev => ({
         ...prev,
@@ -334,13 +341,18 @@ export function useChessGame({
     if (!isAccepted) {
       const newMisses = state.consecutiveMisses + 1;
       if (newMisses >= 2) {
+        const bestUci = acceptableMoves[0].uci;
+        const bestMove = {
+          from: bestUci.slice(0, 2) as Square,
+          to: bestUci.slice(2, 4) as Square,
+        };
         setState(prev => ({
           ...prev,
           consecutiveMisses: newMisses,
           phase: 'GAME_OVER',
-          feedbackMessage: `Game over! Best move was ${acceptableMoves[0].uci}.`,
+          feedbackMessage: 'Game over!',
         }));
-        return { outcome: 'wrong_move', gameOver: true, gameOverReason: 'two_misses' };
+        return { outcome: 'wrong_move', gameOver: true, gameOverReason: 'two_misses', bestMove };
       }
       setState(prev => ({
         ...prev,

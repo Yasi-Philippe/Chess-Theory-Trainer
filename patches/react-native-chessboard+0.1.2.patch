@@ -1,0 +1,87 @@
+diff --git a/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js b/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
+index 63365df..fefd857 100644
+--- a/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
++++ b/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
+@@ -149,22 +149,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/_react.default.forw
+     });
+   }, [chess, controller, isPromoting, moveProgrammatically, pieceRefs, selectableSquares, selectedSquare, showPromotionDialog]);
+   const onSelectPiece = (0, _react.useCallback)(square => {
+-    var _chess$moves;
+-
+     selectedSquare.value = square;
+-    const validSquares = (_chess$moves = chess.moves({
+-      square
+-    })) !== null && _chess$moves !== void 0 ? _chess$moves : []; // eslint-disable-next-line no-shadow
+-
+-    selectableSquares.value = validSquares.map(square => {
+-      const splittedSquare = square.split('x');
+-
+-      if (splittedSquare.length === 0) {
+-        return square;
+-      }
+-
+-      return splittedSquare[splittedSquare.length - 1];
+-    });
++    const validMoves = chess.moves({ square, verbose: true }) ?? [];
++    selectableSquares.value = validMoves.map(move => move.to);
+   }, [chess, selectableSquares, selectedSquare]);
+   const moveTo = (0, _react.useCallback)(to => {
+     if (selectedSquare.value != null) {
+diff --git a/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js b/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
+index eab1701..4165ace 100644
+--- a/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
++++ b/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
+@@ -127,22 +127,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/React.forwardRef((_
+     });
+   }, [chess, controller, isPromoting, moveProgrammatically, pieceRefs, selectableSquares, selectedSquare, showPromotionDialog]);
+   const onSelectPiece = useCallback(square => {
+-    var _chess$moves;
+-
+     selectedSquare.value = square;
+-    const validSquares = (_chess$moves = chess.moves({
+-      square
+-    })) !== null && _chess$moves !== void 0 ? _chess$moves : []; // eslint-disable-next-line no-shadow
+-
+-    selectableSquares.value = validSquares.map(square => {
+-      const splittedSquare = square.split('x');
+-
+-      if (splittedSquare.length === 0) {
+-        return square;
+-      }
+-
+-      return splittedSquare[splittedSquare.length - 1];
+-    });
++    const validMoves = chess.moves({ square, verbose: true }) ?? [];
++    selectableSquares.value = validMoves.map(move => move.to);
+   }, [chess, selectableSquares, selectedSquare]);
+   const moveTo = useCallback(to => {
+     if (selectedSquare.value != null) {
+diff --git a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx b/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
+index 2fc9565..8ace607 100644
+--- a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
++++ b/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
+@@ -187,19 +187,11 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+     (square: Square) => {
+       selectedSquare.value = square;
+ 
+-      const validSquares = (chess.moves({
+-        square,
+-      }) ?? []) as Square[];
+-
+-      // eslint-disable-next-line no-shadow
+-      selectableSquares.value = validSquares.map((square) => {
+-        const splittedSquare = square.split('x');
+-        if (splittedSquare.length === 0) {
+-          return square;
+-        }
+-
+-        return splittedSquare[splittedSquare.length - 1] as Square;
+-      });
++      // Use verbose moves so we get the actual target square for every move
++      // type, including castling (which would otherwise appear as 'O-O'/'O-O-O'
++      // in SAN and never match the target square string used by PlaceholderDot).
++      const validMoves = (chess.moves({ square, verbose: true }) ?? []) as any[];
++      selectableSquares.value = validMoves.map((move: any) => move.to as Square);
+     },
+     [chess, selectableSquares, selectedSquare]
+   );
