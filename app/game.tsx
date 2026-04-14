@@ -55,6 +55,7 @@ export default function GameScreen() {
     resetGame,
     playOpponentOpeningMove,
     isOpponentOpeningTurn,
+    warmUp,
   } = useChessGame({
     opening: setup.opening,
     playerColor: setup.color,
@@ -101,6 +102,14 @@ export default function GameScreen() {
       playEngineMove();
     }
   }, [state.phase, isEngineReady]);
+
+  // Warm up the prefetch cache as soon as the engine is ready and it's the
+  // player's first move in GAME_PHASE (Free Mode as White).
+  useEffect(() => {
+    if (isEngineReady && state.phase === 'GAME_PHASE' && state.moveCount === 0) {
+      warmUp(state.lastValidFen);
+    }
+  }, [isEngineReady, state.phase]);
 
   /**
    * When it's the opponent's turn in the opening (e.g. playing as Black,
@@ -175,12 +184,13 @@ export default function GameScreen() {
     boardRef.current?.resetBoard();
   }, [resetGame]);
 
-  // gestureEnabled only when it's the human player's turn and engine is ready.
+  // gestureEnabled only when it's the human player's turn.
+  // OPENING_PHASE uses the book (no engine needed) so we skip the isEngineReady gate.
+  // GAME_PHASE requires the engine to be ready (for move validation / prefetch).
   // Uses isAnimating (state) not animatingRef so React re-renders when it clears.
   const gestureEnabled =
-    isEngineReady &&
     !isAnimating &&
-    (state.phase === 'GAME_PHASE' ||
+    ((state.phase === 'GAME_PHASE' && isEngineReady) ||
       (state.phase === 'OPENING_PHASE' && !isOpponentOpeningTurn));
 
   const modeLabel = setup.mode === 'free' ? 'Free Mode' : 'Theory Mode';
@@ -231,13 +241,14 @@ export default function GameScreen() {
       {/* Miss indicator dots */}
       <MissIndicator consecutiveMisses={state.consecutiveMisses} />
 
-      {/* Chess board */}
+      {/* Chess board — flipped for Black so h8 is bottom-left */}
       <View style={styles.boardWrapper}>
         <Chessboard
           ref={boardRef}
           boardSize={SCREEN_WIDTH}
           onMove={handleBoardMove}
           gestureEnabled={gestureEnabled}
+          flipped={setup.color === 'black'}
           colors={{
             black: '#b58863',
             white: '#f0d9b5',
@@ -268,8 +279,9 @@ export default function GameScreen() {
         </View>
       )}
 
-      {/* Engine loading overlay — shown until Stockfish sends readyok */}
-      {!isEngineReady && (
+      {/* Engine loading overlay — only block when the engine is actually needed.
+          OPENING_PHASE uses the opening book, so play can start immediately. */}
+      {!isEngineReady && state.phase !== 'OPENING_PHASE' && (
         <View style={styles.engineOverlay}>
           <ActivityIndicator size="large" color="#e94560" />
           <Text style={styles.engineLoadingText}>Loading engine…</Text>

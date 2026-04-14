@@ -6,6 +6,7 @@ import {
   FlatList,
   TextInput,
   StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Opening, PlayerColor, OpeningMode } from '../../types';
@@ -13,9 +14,10 @@ import { OPENINGS_BY_COLOR } from '../../data/openings';
 
 interface OpeningSelectorProps {
   onSelect: (opening: Opening | null, color: PlayerColor, mode: OpeningMode) => void;
+  navigating?: boolean;
 }
 
-export function OpeningSelector({ onSelect }: OpeningSelectorProps) {
+export function OpeningSelector({ onSelect, navigating = false }: OpeningSelectorProps) {
   const insets = useSafeAreaInsets();
   const [selectedColor, setSelectedColor] = useState<PlayerColor>('white');
   const [selectedOpening, setSelectedOpening] = useState<Opening | null>(null);
@@ -36,11 +38,11 @@ export function OpeningSelector({ onSelect }: OpeningSelectorProps) {
   }, [allOpenings, search]);
 
   function handleStart() {
-    if (selectedMode === 'theory' && !selectedOpening) return;
+    if (navigating || (selectedMode === 'theory' && !selectedOpening)) return;
     onSelect(selectedOpening, selectedColor, selectedMode);
   }
 
-  const canStart = selectedMode === 'free' || !!selectedOpening;
+  const canStart = !navigating && (selectedMode === 'free' || !!selectedOpening);
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + 16 }]}>
@@ -155,9 +157,12 @@ export function OpeningSelector({ onSelect }: OpeningSelectorProps) {
         onPress={handleStart}
         disabled={!canStart}
       >
-        <Text style={styles.startButtonText}>
-          {selectedMode === 'free' ? 'Start Free Play' : 'Start Theory Training'}
-        </Text>
+        {navigating
+          ? <ActivityIndicator size="small" color="#fff" />
+          : <Text style={styles.startButtonText}>
+              {selectedMode === 'free' ? 'Start Free Play' : 'Start Theory Training'}
+            </Text>
+        }
       </TouchableOpacity>
     </View>
   );

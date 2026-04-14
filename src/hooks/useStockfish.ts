@@ -82,11 +82,26 @@ function buildBridgeHtml(engineScript: string): string {
 <head><meta charset="utf-8"/></head>
 <body>
 <script>
+  // Queue messages until ReactNativeWebView is injected by the native layer.
+  // On some Android versions the injection is async relative to script execution.
+  var _rnQueue = [];
   function sendToRN(msg) {
     if (window.ReactNativeWebView) {
       window.ReactNativeWebView.postMessage(String(msg));
+    } else {
+      _rnQueue.push(String(msg));
     }
   }
+  // Flush queued messages once the bridge is available (polls every 50 ms).
+  var _flushInterval = setInterval(function() {
+    if (window.ReactNativeWebView && _rnQueue.length) {
+      clearInterval(_flushInterval);
+      var q = _rnQueue.splice(0);
+      for (var i = 0; i < q.length; i++) {
+        window.ReactNativeWebView.postMessage(q[i]);
+      }
+    }
+  }, 50);
 
   // Intercept the engine's UCI output — the script calls postMessage(line)
   // which in Worker context posts to the parent; here we reroute it to RN.

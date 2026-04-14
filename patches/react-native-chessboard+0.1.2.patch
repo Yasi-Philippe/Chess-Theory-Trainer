@@ -1,8 +1,23 @@
 diff --git a/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js b/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
-index 63365df..fefd857 100644
+index 63365df..4e49a1a 100644
 --- a/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
 +++ b/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
-@@ -149,22 +149,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/_react.default.forw
+@@ -63,12 +63,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/_react.default.forw
+   }), [chess, controller, selectableSquares, turn]);
+   const isPromoting = (0, _react.useCallback)((from, to) => {
+     if (!to.includes('8') && !to.includes('1')) return false;
+-    const val = toTranslation(from);
+-    const x = Math.floor(val.x / pieceSize);
+-    const y = Math.floor(val.y / pieceSize);
+-    const piece = chess.board()[y][x];
++    const piece = chess.get(from);
+     return (piece === null || piece === void 0 ? void 0 : piece.type) === chess.PAWN && (to.includes('8') && piece.color === chess.WHITE || to.includes('1') && piece.color === chess.BLACK);
+-  }, [chess, pieceSize, toTranslation]);
++  }, [chess]);
+   const findKing = (0, _react.useCallback)(type => {
+     const board = chess.board();
+ 
+@@ -149,22 +146,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/_react.default.forw
      });
    }, [chess, controller, isPromoting, moveProgrammatically, pieceRefs, selectableSquares, selectedSquare, showPromotionDialog]);
    const onSelectPiece = (0, _react.useCallback)(square => {
@@ -27,11 +42,88 @@ index 63365df..fefd857 100644
    }, [chess, selectableSquares, selectedSquare]);
    const moveTo = (0, _react.useCallback)(to => {
      if (selectedSquare.value != null) {
+diff --git a/node_modules/react-native-chessboard/lib/commonjs/notation.js b/node_modules/react-native-chessboard/lib/commonjs/notation.js
+index efe5e3c..b45f4fb 100644
+--- a/node_modules/react-native-chessboard/lib/commonjs/notation.js
++++ b/node_modules/react-native-chessboard/lib/commonjs/notation.js
+@@ -11,7 +11,8 @@ var _hooks = require("./context/props-context/hooks");
+ 
+ const useReversePiecePosition = () => {
+   const {
+-    pieceSize
++    pieceSize,
++    flipped
+   } = (0, _hooks.useChessboardProps)();
+   const toTranslation = (0, _react.useCallback)(to => {
+     'worklet';
+@@ -24,15 +25,21 @@ const useReversePiecePosition = () => {
+       throw new Error('Invalid notation: ' + to);
+     }
+ 
+-    const indexes = {
+-      x: col.charCodeAt(0) - 'a'.charCodeAt(0),
+-      y: parseInt(row, 10) - 1
+-    };
++    const colIndex = col.charCodeAt(0) - 97;
++    const rowIndex = parseInt(row, 10) - 1;
++
++    if (flipped) {
++      return {
++        x: (7 - colIndex) * pieceSize,
++        y: rowIndex * pieceSize
++      };
++    }
++
+     return {
+-      x: indexes.x * pieceSize,
+-      y: 7 * pieceSize - indexes.y * pieceSize
++      x: colIndex * pieceSize,
++      y: (7 - rowIndex) * pieceSize
+     };
+-  }, [pieceSize]);
++  }, [pieceSize, flipped]);
+   const toPosition = (0, _react.useCallback)(_ref => {
+     'worklet';
+ 
+@@ -40,10 +47,17 @@ const useReversePiecePosition = () => {
+       x,
+       y
+     } = _ref;
++
++    if (flipped) {
++      const col = String.fromCharCode(97 + (7 - Math.round(x / pieceSize)));
++      const row = `${1 + Math.round(y / pieceSize)}`;
++      return `${col}${row}`;
++    }
++
+     const col = String.fromCharCode(97 + Math.round(x / pieceSize));
+     const row = `${8 - Math.round(y / pieceSize)}`;
+     return `${col}${row}`;
+-  }, [pieceSize]);
++  }, [pieceSize, flipped]);
+   return {
+     toPosition,
+     toTranslation
 diff --git a/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js b/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
-index eab1701..4165ace 100644
+index eab1701..567aaa8 100644
 --- a/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
 +++ b/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
-@@ -127,22 +127,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/React.forwardRef((_
+@@ -41,12 +41,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/React.forwardRef((_
+   }), [chess, controller, selectableSquares, turn]);
+   const isPromoting = useCallback((from, to) => {
+     if (!to.includes('8') && !to.includes('1')) return false;
+-    const val = toTranslation(from);
+-    const x = Math.floor(val.x / pieceSize);
+-    const y = Math.floor(val.y / pieceSize);
+-    const piece = chess.board()[y][x];
++    const piece = chess.get(from);
+     return (piece === null || piece === void 0 ? void 0 : piece.type) === chess.PAWN && (to.includes('8') && piece.color === chess.WHITE || to.includes('1') && piece.color === chess.BLACK);
+-  }, [chess, pieceSize, toTranslation]);
++  }, [chess]);
+   const findKing = useCallback(type => {
+     const board = chess.board();
+ 
+@@ -127,22 +124,9 @@ const BoardOperationsContextProviderComponent = /*#__PURE__*/React.forwardRef((_
      });
    }, [chess, controller, isPromoting, moveProgrammatically, pieceRefs, selectableSquares, selectedSquare, showPromotionDialog]);
    const onSelectPiece = useCallback(square => {
@@ -56,6 +148,68 @@ index eab1701..4165ace 100644
    }, [chess, selectableSquares, selectedSquare]);
    const moveTo = useCallback(to => {
      if (selectedSquare.value != null) {
+diff --git a/node_modules/react-native-chessboard/lib/module/notation.js b/node_modules/react-native-chessboard/lib/module/notation.js
+index dc401c3..c939d02 100644
+--- a/node_modules/react-native-chessboard/lib/module/notation.js
++++ b/node_modules/react-native-chessboard/lib/module/notation.js
+@@ -3,7 +3,8 @@ import { useChessboardProps } from './context/props-context/hooks';
+ 
+ const useReversePiecePosition = () => {
+   const {
+-    pieceSize
++    pieceSize,
++    flipped
+   } = useChessboardProps();
+   const toTranslation = useCallback(to => {
+     'worklet';
+@@ -16,15 +17,21 @@ const useReversePiecePosition = () => {
+       throw new Error('Invalid notation: ' + to);
+     }
+ 
+-    const indexes = {
+-      x: col.charCodeAt(0) - 'a'.charCodeAt(0),
+-      y: parseInt(row, 10) - 1
+-    };
++    const colIndex = col.charCodeAt(0) - 97;
++    const rowIndex = parseInt(row, 10) - 1;
++
++    if (flipped) {
++      return {
++        x: (7 - colIndex) * pieceSize,
++        y: rowIndex * pieceSize
++      };
++    }
++
+     return {
+-      x: indexes.x * pieceSize,
+-      y: 7 * pieceSize - indexes.y * pieceSize
++      x: colIndex * pieceSize,
++      y: (7 - rowIndex) * pieceSize
+     };
+-  }, [pieceSize]);
++  }, [pieceSize, flipped]);
+   const toPosition = useCallback(_ref => {
+     'worklet';
+ 
+@@ -32,10 +39,17 @@ const useReversePiecePosition = () => {
+       x,
+       y
+     } = _ref;
++
++    if (flipped) {
++      const col = String.fromCharCode(97 + (7 - Math.round(x / pieceSize)));
++      const row = `${1 + Math.round(y / pieceSize)}`;
++      return `${col}${row}`;
++    }
++
+     const col = String.fromCharCode(97 + Math.round(x / pieceSize));
+     const row = `${8 - Math.round(y / pieceSize)}`;
+     return `${col}${row}`;
+-  }, [pieceSize]);
++  }, [pieceSize, flipped]);
+   return {
+     toPosition,
+     toTranslation
 diff --git a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx b/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
 index 2fc9565..8ace607 100644
 --- a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx

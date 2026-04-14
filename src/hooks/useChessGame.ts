@@ -485,6 +485,19 @@ export function useChessGame({
     !!opening &&
     !isPlayerTurnAtIndex(state.openingMoveIndex, playerColor);
 
+  /**
+   * Trigger a background prefetch from the given FEN (typically the starting
+   * position). Call this once the engine is ready and it's the player's turn
+   * at move 0 to warm the cache before the first move is made.
+   */
+  const warmUp = useCallback(
+    (fen: string) => {
+      startPrefetch(fen);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [getBestMove],
+  );
+
   return {
     state,
     onPlayerMove,
@@ -492,5 +505,6 @@ export function useChessGame({
     resetGame,
     playOpponentOpeningMove,
     isOpponentOpeningTurn,
+    warmUp,
   };
 }
