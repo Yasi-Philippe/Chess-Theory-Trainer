@@ -1,10 +1,11 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 
 export default function GameOverScreen() {
   const router = useRouter();
   const { score } = useLocalSearchParams<{ score: string }>();
+  const [navigating, setNavigating] = useState(false);
   const moves = parseInt(score ?? '0', 10);
 
   function getRating(): { label: string; color: string } {
@@ -43,10 +44,14 @@ export default function GameOverScreen() {
 
       <View style={styles.buttons}>
         <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={() => router.replace('/game')}
+          style={[styles.primaryButton, navigating && styles.primaryButtonDisabled]}
+          disabled={navigating}
+          onPress={() => { setNavigating(true); router.back(); }}
         >
-          <Text style={styles.primaryButtonText}>Try Again</Text>
+          {navigating
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Text style={styles.primaryButtonText}>Try Again</Text>
+          }
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -131,6 +136,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 16,
     alignItems: 'center',
+  },
+  primaryButtonDisabled: {
+    opacity: 0.7,
   },
   primaryButtonText: {
     color: '#fff',

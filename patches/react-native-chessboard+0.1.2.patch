@@ -1,3 +1,39 @@
+diff --git a/node_modules/react-native-chessboard/lib/commonjs/components/pieces.js b/node_modules/react-native-chessboard/lib/commonjs/components/pieces.js
+index c7a95c6..b4fc98d 100644
+--- a/node_modules/react-native-chessboard/lib/commonjs/components/pieces.js
++++ b/node_modules/react-native-chessboard/lib/commonjs/components/pieces.js
+@@ -26,23 +26,24 @@ const Pieces = /*#__PURE__*/_react.default.memo(() => {
+     pieceSize
+   } = (0, _hooks.useChessboardProps)();
+   const {
+-    toPosition
++    toTranslation
+   } = (0, _notation.useReversePiecePosition)();
+   return /*#__PURE__*/_react.default.createElement(_react.default.Fragment, null, board.map((row, y) => row.map((piece, x) => {
+     if (piece !== null) {
+       var _refs$current;
+ 
+-      const square = toPosition({
+-        x: x * pieceSize,
+-        y: y * pieceSize
+-      });
++      // Derive the square name directly from board-array indices so it is
++      // always correct regardless of orientation (board[0][x] = rank 8).
++      const square = `${String.fromCharCode(97 + x)}${8 - y}`;
++      // Use toTranslation so the start position respects the flipped prop.
++      const pos = toTranslation(square);
+       return /*#__PURE__*/_react.default.createElement(_piece.default, {
+         ref: refs === null || refs === void 0 ? void 0 : (_refs$current = refs.current) === null || _refs$current === void 0 ? void 0 : _refs$current[square],
+         key: `${x}-${y}`,
+         id: `${piece.color}${piece.type}`,
+         startPosition: {
+-          x,
+-          y
++          x: pos.x / pieceSize,
++          y: pos.y / pieceSize
+         },
+         square: square,
+         size: pieceSize
 diff --git a/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js b/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
 index 63365df..4e49a1a 100644
 --- a/node_modules/react-native-chessboard/lib/commonjs/context/board-operations-context/index.js
@@ -104,6 +140,42 @@ index efe5e3c..b45f4fb 100644
    return {
      toPosition,
      toTranslation
+diff --git a/node_modules/react-native-chessboard/lib/module/components/pieces.js b/node_modules/react-native-chessboard/lib/module/components/pieces.js
+index 1a7ce50..4490b40 100644
+--- a/node_modules/react-native-chessboard/lib/module/components/pieces.js
++++ b/node_modules/react-native-chessboard/lib/module/components/pieces.js
+@@ -11,23 +11,24 @@ const Pieces = /*#__PURE__*/React.memo(() => {
+     pieceSize
+   } = useChessboardProps();
+   const {
+-    toPosition
++    toTranslation
+   } = useReversePiecePosition();
+   return /*#__PURE__*/React.createElement(React.Fragment, null, board.map((row, y) => row.map((piece, x) => {
+     if (piece !== null) {
+       var _refs$current;
+ 
+-      const square = toPosition({
+-        x: x * pieceSize,
+-        y: y * pieceSize
+-      });
++      // Derive the square name directly from board-array indices so it is
++      // always correct regardless of orientation (board[0][x] = rank 8).
++      const square = `${String.fromCharCode(97 + x)}${8 - y}`;
++      // Use toTranslation so the start position respects the flipped prop.
++      const pos = toTranslation(square);
+       return /*#__PURE__*/React.createElement(Piece, {
+         ref: refs === null || refs === void 0 ? void 0 : (_refs$current = refs.current) === null || _refs$current === void 0 ? void 0 : _refs$current[square],
+         key: `${x}-${y}`,
+         id: `${piece.color}${piece.type}`,
+         startPosition: {
+-          x,
+-          y
++          x: pos.x / pieceSize,
++          y: pos.y / pieceSize
+         },
+         square: square,
+         size: pieceSize
 diff --git a/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js b/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
 index eab1701..567aaa8 100644
 --- a/node_modules/react-native-chessboard/lib/module/context/board-operations-context/index.js
@@ -210,11 +282,113 @@ index dc401c3..c939d02 100644
    return {
      toPosition,
      toTranslation
+diff --git a/node_modules/react-native-chessboard/src/components/piece/index.tsx b/node_modules/react-native-chessboard/src/components/piece/index.tsx
+index bbbd539..953604f 100644
+--- a/node_modules/react-native-chessboard/src/components/piece/index.tsx
++++ b/node_modules/react-native-chessboard/src/components/piece/index.tsx
+@@ -27,6 +27,7 @@ type PieceProps = {
+ 
+ export type ChessPieceRef = {
+   moveTo: (square: Square) => Promise<Move | undefined>;
++  animateOnly: (to: Square) => void;
+   enable: (activate: boolean) => void;
+ };
+ 
+@@ -134,12 +135,21 @@ const Piece = React.memo(
+             moveTo: (to: Square) => {
+               return moveTo(square, to);
+             },
++            animateOnly: (to: Square) => {
++              const { x, y } = toTranslation(to);
++              translateX.value = withTiming(x, { duration: moveDuration }, () => {
++                offsetX.value = translateX.value;
++              });
++              translateY.value = withTiming(y, { duration: moveDuration }, () => {
++                offsetY.value = translateY.value;
++              });
++            },
+             enable: (active: boolean) => {
+               pieceEnabled.value = active;
+             },
+           };
+         },
+-        [moveTo, pieceEnabled, square]
++        [moveTo, pieceEnabled, square, toTranslation, translateX, translateY, offsetX, offsetY, moveDuration]
+       );
+ 
+       const onStartTap = useCallback(
+@@ -193,7 +203,7 @@ const Piece = React.memo(
+       ]);
+ 
+       const gesture = Gesture.Pan()
+-        .enabled(!isPromoting && pieceEnabled.value)
++        .enabled(!isPromoting && pieceEnabled.value && gestureEnabledFromChessboardProps)
+         .onBegin(() => {
+           offsetX.value = translateX.value;
+           offsetY.value = translateY.value;
+diff --git a/node_modules/react-native-chessboard/src/components/pieces.tsx b/node_modules/react-native-chessboard/src/components/pieces.tsx
+index 5410d88..a0dd786 100644
+--- a/node_modules/react-native-chessboard/src/components/pieces.tsx
++++ b/node_modules/react-native-chessboard/src/components/pieces.tsx
+@@ -11,24 +11,25 @@ const Pieces = React.memo(() => {
+   const board = useBoard();
+   const refs = usePieceRefs();
+   const { pieceSize } = useChessboardProps();
+-  const { toPosition } = useReversePiecePosition();
++  const { toTranslation } = useReversePiecePosition();
+ 
+   return (
+     <>
+       {board.map((row, y) =>
+         row.map((piece, x) => {
+           if (piece !== null) {
+-            const square = toPosition({
+-              x: x * pieceSize,
+-              y: y * pieceSize,
+-            });
++            // Compute square name directly from board indices so it is always
++            // correct regardless of orientation (board[0][x] = rank 8).
++            const square = `${String.fromCharCode(97 + x)}${8 - y}` as any;
++            // Use toTranslation so the start position respects flipped mode.
++            const pos = toTranslation(square);
+ 
+             return (
+               <Piece
+                 ref={refs?.current?.[square]}
+                 key={`${x}-${y}`}
+                 id={`${piece.color}${piece.type}` as const}
+-                startPosition={{ x, y }}
++                startPosition={{ x: pos.x / pieceSize, y: pos.y / pieceSize }}
+                 square={square}
+                 size={pieceSize}
+               />
 diff --git a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx b/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
-index 2fc9565..8ace607 100644
+index 2fc9565..846b311 100644
 --- a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
 +++ b/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
-@@ -187,19 +187,11 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+@@ -69,19 +69,14 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+   const isPromoting = useCallback(
+     (from: Square, to: Square) => {
+       if (!to.includes('8') && !to.includes('1')) return false;
+-
+-      const val = toTranslation(from);
+-      const x = Math.floor(val.x / pieceSize);
+-      const y = Math.floor(val.y / pieceSize);
+-      const piece = chess.board()[y][x];
+-
++      const piece = chess.get(from);
+       return (
+         piece?.type === chess.PAWN &&
+         ((to.includes('8') && piece.color === chess.WHITE) ||
+           (to.includes('1') && piece.color === chess.BLACK))
+       );
+     },
+-    [chess, pieceSize, toTranslation]
++    [chess]
+   );
+ 
+   const findKing = useCallback(
+@@ -187,19 +182,11 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
      (square: Square) => {
        selectedSquare.value = square;
  
@@ -239,3 +413,89 @@ index 2fc9565..8ace607 100644
      },
      [chess, selectableSquares, selectedSquare]
    );
+diff --git a/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx b/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx
+index 3966cd9..ca005f4 100644
+--- a/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx
++++ b/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx
+@@ -76,6 +76,24 @@ const BoardRefsContextProviderComponent = React.forwardRef<
+     ref,
+     () => ({
+       move: ({ from, to }) => {
++        // Detect castling before the move is applied so we can animate
++        // the rook simultaneously with the king.
++        const legalMoves = chess.moves({ verbose: true }) as any[];
++        const thisMove = legalMoves.find((m: any) => m.from === from && m.to === to);
++        if (thisMove) {
++          const flags: string = thisMove.flags ?? '';
++          if (flags.includes('k') || flags.includes('q')) {
++            const color = thisMove.color as 'w' | 'b';
++            const isKingSide = flags.includes('k');
++            const rookFrom = (isKingSide
++              ? (color === 'w' ? 'h1' : 'h8')
++              : (color === 'w' ? 'a1' : 'a8')) as Square;
++            const rookTo = (isKingSide
++              ? (color === 'w' ? 'f1' : 'f8')
++              : (color === 'w' ? 'd1' : 'd8')) as Square;
++            pieceRefs?.current?.[rookFrom]?.current?.animateOnly?.(rookTo);
++          }
++        }
+         return pieceRefs?.current?.[from].current?.moveTo?.(to);
+       },
+       highlight: ({ square, color }) => {
+diff --git a/node_modules/react-native-chessboard/src/notation.ts b/node_modules/react-native-chessboard/src/notation.ts
+index 1484f29..6d02a44 100644
+--- a/node_modules/react-native-chessboard/src/notation.ts
++++ b/node_modules/react-native-chessboard/src/notation.ts
+@@ -5,7 +5,7 @@ import { useChessboardProps } from './context/props-context/hooks';
+ import type { Vector } from './types';
+ 
+ const useReversePiecePosition = () => {
+-  const { pieceSize } = useChessboardProps();
++  const { pieceSize, flipped } = useChessboardProps() as any;
+ 
+   const toTranslation = useCallback(
+     (to: Square) => {
+@@ -16,26 +16,35 @@ const useReversePiecePosition = () => {
+       if (!col || !row) {
+         throw new Error('Invalid notation: ' + to);
+       }
+-      const indexes = {
+-        x: col.charCodeAt(0) - 'a'.charCodeAt(0),
+-        y: parseInt(row, 10) - 1,
+-      };
++      const colIndex = col.charCodeAt(0) - 97;
++      const rowIndex = parseInt(row, 10) - 1;
++      if (flipped) {
++        return {
++          x: (7 - colIndex) * pieceSize,
++          y: rowIndex * pieceSize,
++        };
++      }
+       return {
+-        x: indexes.x * pieceSize,
+-        y: 7 * pieceSize - indexes.y * pieceSize,
++        x: colIndex * pieceSize,
++        y: (7 - rowIndex) * pieceSize,
+       };
+     },
+-    [pieceSize]
++    [pieceSize, flipped]
+   );
+ 
+   const toPosition = useCallback(
+     ({ x, y }: Vector) => {
+       'worklet';
++      if (flipped) {
++        const col = String.fromCharCode(97 + (7 - Math.round(x / pieceSize)));
++        const row = `${1 + Math.round(y / pieceSize)}`;
++        return `${col}${row}` as Square;
++      }
+       const col = String.fromCharCode(97 + Math.round(x / pieceSize));
+       const row = `${8 - Math.round(y / pieceSize)}`;
+       return `${col}${row}` as Square;
+     },
+-    [pieceSize]
++    [pieceSize, flipped]
+   );
+ 
+   return { toPosition, toTranslation };

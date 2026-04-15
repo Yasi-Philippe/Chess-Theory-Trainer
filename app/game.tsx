@@ -12,7 +12,7 @@ import { WebView } from 'react-native-webview';
 import Chessboard from 'react-native-chessboard';
 import type { ChessboardRef } from 'react-native-chessboard';
 import type { Move, Square } from 'chess.js';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { GameHUD } from '../src/components/GameHUD/GameHUD';
 import { MissIndicator } from '../src/components/MissIndicator/MissIndicator';
 import { useChessGame } from '../src/hooks/useChessGame';
@@ -40,6 +40,12 @@ export default function GameScreen() {
   // State mirror so gestureEnabled re-evaluates after animations complete
   const [isAnimating, setIsAnimating] = useState(false);
 
+  // Premove: queued move to execute once the engine finishes its turn
+  const premoveRef = useRef<{ from: Square; to: Square; promotion?: string } | null>(null);
+  // First-tap selection state for the premove overlay (no React state needed — highlights
+  // are driven imperatively via boardRef)
+  const premoveFromRef = useRef<Square | null>(null);
+
   function setAnimating(value: boolean) {
     animatingRef.current = value;
     setIsAnimating(value);
@@ -64,6 +70,24 @@ export default function GameScreen() {
     getTopMove,
   });
 
+  // When the user presses "Try Again" on the game-over screen we navigate
+  // back to this screen (no new mount, engine stays warm).  Reset everything
+  // so the game starts fresh.
+  // Read phase via ref so the callback stays stable and only fires on focus
+  // events — NOT every time state.phase changes.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  useFocusEffect(
+    useCallback(() => {
+      if (stateRef.current.phase === 'GAME_OVER') {
+        premoveRef.current = null;
+        premoveFromRef.current = null;
+        resetGame();
+        boardRef.current?.resetBoard();
+      }
+    }, [resetGame]),
+  );
+
   // Navigate to game-over when game ends.
   // Use a 1.5 s delay so the best-move highlight is visible before leaving.
   useEffect(() => {
@@ -78,17 +102,31 @@ export default function GameScreen() {
   }, [state.phase]);
 
   /**
-   * Animate the engine's reply on the board, then update state.
+   * Wait for Stockfish to reply, animate the piece, then execute any queued premove.
+   * setAnimating is deferred until we actually have a move to animate — keeping the
+   * premove overlay active throughout the thinking phase.
    */
   const playEngineMove = useCallback(async () => {
+    // Fetch the engine move first (Stockfish thinks here; overlay stays visible)
+    const engineMove = await requestEngineMove();
+
+    // Now block gestures for the duration of the animation only
     setAnimating(true);
     try {
-      const engineMove = await requestEngineMove();
       if (engineMove) {
         await boardRef.current?.move({ from: engineMove.from, to: engineMove.to });
       }
     } finally {
       setAnimating(false);
+    }
+
+    // Execute queued premove now that the board is idle and phase is GAME_PHASE
+    const pm = premoveRef.current;
+    if (pm) {
+      premoveRef.current = null;
+      await new Promise<void>(r => setTimeout(r, 50));
+      boardRef.current?.resetAllHighlightedSquares();
+      boardRef.current?.move({ from: pm.from, to: pm.to });
     }
   }, [requestEngineMove]);
 
@@ -179,7 +217,57 @@ export default function GameScreen() {
     [onPlayerMove, state.lastValidFen],
   );
 
+  /**
+   * Two-tap premove selection overlay (active only during ENGINE_TURN).
+   * Coordinates are relative to the board view, so we map directly to squares.
+   */
+  const handlePremoveOverlayPress = useCallback(
+    (event: any) => {
+      const { locationX, locationY } = event.nativeEvent;
+      const squareSize = SCREEN_WIDTH / 8;
+      const col = Math.floor(locationX / squareSize);
+      const row = Math.floor(locationY / squareSize);
+      // Convert pixel column/row to chess square, respecting board flip for Black.
+      const square: Square =
+        setup.color === 'black'
+          ? (`${String.fromCharCode(97 + (7 - col))}${row + 1}` as Square)
+          : (`${String.fromCharCode(97 + col)}${8 - row}` as Square);
+
+      const from = premoveFromRef.current;
+
+      if (!from) {
+        // First tap: select the "from" square
+        premoveFromRef.current = square;
+        boardRef.current?.resetAllHighlightedSquares();
+        boardRef.current?.highlight({ square, color: '#f6a82599' });
+      } else if (from === square) {
+        // Tap same square again: deselect
+        premoveFromRef.current = null;
+        premoveRef.current = null;
+        boardRef.current?.resetAllHighlightedSquares();
+      } else {
+        // Second tap: queue the premove
+        premoveRef.current = { from, to: square };
+        premoveFromRef.current = null;
+        boardRef.current?.resetAllHighlightedSquares();
+        boardRef.current?.highlight({ square: from, color: '#f6a82566' });
+        boardRef.current?.highlight({ square,       color: '#f6a82566' });
+      }
+    },
+    [setup.color],
+  );
+
+  // Cancel any partial premove selection once the engine animation finishes
+  // and control returns to the player (overlay disappears).
+  useEffect(() => {
+    if (state.phase === 'GAME_PHASE' && !isAnimating) {
+      premoveFromRef.current = null;
+    }
+  }, [state.phase, isAnimating]);
+
   const handleReset = useCallback(() => {
+    premoveRef.current = null;
+    premoveFromRef.current = null;
     resetGame();
     boardRef.current?.resetBoard();
   }, [resetGame]);
@@ -215,11 +303,17 @@ export default function GameScreen() {
         />
       ) : null}
 
-      {/* Back button row */}
+      {/* Back button row + engine thinking indicator */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backChip}>
           <Text style={styles.backChipText}>← {modeLabel}</Text>
         </TouchableOpacity>
+        {isEngineReady && state.phase === 'ENGINE_TURN' && (
+          <View style={styles.thinkingChip}>
+            <ActivityIndicator size="small" color="#e94560" />
+            <Text style={styles.thinkingChipText}>Thinking…</Text>
+          </View>
+        )}
       </View>
 
       {/* HUD: opening name, score, phase */}
@@ -256,6 +350,18 @@ export default function GameScreen() {
           withLetters={false}
           withNumbers={false}
         />
+        {/* Transparent premove overlay — active while Stockfish thinks OR animates.
+            Phase is already GAME_PHASE during animation (requestEngineMove sets it
+            before returning), so we must cover both ENGINE_TURN and the animated phase. */}
+        {(state.phase === 'ENGINE_TURN' ||
+          (state.phase === 'GAME_PHASE' && isAnimating)) &&
+          isEngineReady && (
+          <View
+            style={styles.premoveOverlay}
+            onStartShouldSetResponder={() => true}
+            onResponderGrant={handlePremoveOverlayPress}
+          />
+        )}
       </View>
 
       {/* Bottom controls — above Android nav bar */}
@@ -270,14 +376,6 @@ export default function GameScreen() {
           <Text style={styles.changeText}>Change Setup</Text>
         </TouchableOpacity>
       </View>
-
-      {/* Stockfish thinking banner */}
-      {isEngineReady && state.phase === 'ENGINE_TURN' && (
-        <View style={styles.thinkingBanner}>
-          <ActivityIndicator size="small" color="#e94560" />
-          <Text style={styles.thinkingText}>Stockfish is thinking…</Text>
-        </View>
-      )}
 
       {/* Engine loading overlay — only block when the engine is actually needed.
           OPENING_PHASE uses the opening book, so play can start immediately. */}
@@ -303,6 +401,9 @@ const styles = StyleSheet.create({
     opacity: 0,
   },
   topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 8,
   },
@@ -320,6 +421,9 @@ const styles = StyleSheet.create({
   },
   boardWrapper: {
     alignSelf: 'center',
+  },
+  premoveOverlay: {
+    ...StyleSheet.absoluteFillObject,
   },
   controls: {
     flexDirection: 'row',
@@ -349,17 +453,18 @@ const styles = StyleSheet.create({
     color: '#8892a4',
     fontWeight: '600',
   },
-  thinkingBanner: {
+  thinkingChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 6,
+    gap: 6,
     backgroundColor: '#16213e',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
   },
-  thinkingText: {
+  thinkingChipText: {
     color: '#8892a4',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   engineOverlay: {
