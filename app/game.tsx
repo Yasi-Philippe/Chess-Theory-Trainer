@@ -37,14 +37,11 @@ export default function GameScreen() {
   const boardRef = useRef<ChessboardRef>(null);
   // Ref for synchronous animation guard (used inside callbacks without stale closure risk)
   const animatingRef = useRef(false);
-  // State mirror so gestureEnabled re-evaluates after animations complete
+  // State mirror so premove-clear effect re-fires after animations complete
   const [isAnimating, setIsAnimating] = useState(false);
 
   // Premove: queued move to execute once the engine finishes its turn
   const premoveRef = useRef<{ from: Square; to: Square; promotion?: string } | null>(null);
-  // First-tap selection state for the premove overlay (no React state needed — highlights
-  // are driven imperatively via boardRef)
-  const premoveFromRef = useRef<Square | null>(null);
 
   function setAnimating(value: boolean) {
     animatingRef.current = value;
@@ -81,7 +78,6 @@ export default function GameScreen() {
     useCallback(() => {
       if (stateRef.current.phase === 'GAME_OVER') {
         premoveRef.current = null;
-        premoveFromRef.current = null;
         resetGame();
         boardRef.current?.resetBoard();
       }
@@ -218,68 +214,28 @@ export default function GameScreen() {
   );
 
   /**
-   * Two-tap premove selection overlay (active only during ENGINE_TURN).
-   * Coordinates are relative to the board view, so we map directly to squares.
+   * Called by the board when the user selects a piece + destination during
+   * ENGINE_TURN. Queues the move and shows orange highlights.
    */
-  const handlePremoveOverlayPress = useCallback(
-    (event: any) => {
-      const { locationX, locationY } = event.nativeEvent;
-      const squareSize = SCREEN_WIDTH / 8;
-      const col = Math.floor(locationX / squareSize);
-      const row = Math.floor(locationY / squareSize);
-      // Convert pixel column/row to chess square, respecting board flip for Black.
-      const square: Square =
-        setup.color === 'black'
-          ? (`${String.fromCharCode(97 + (7 - col))}${row + 1}` as Square)
-          : (`${String.fromCharCode(97 + col)}${8 - row}` as Square);
-
-      const from = premoveFromRef.current;
-
-      if (!from) {
-        // First tap: select the "from" square
-        premoveFromRef.current = square;
-        boardRef.current?.resetAllHighlightedSquares();
-        boardRef.current?.highlight({ square, color: '#f6a82599' });
-      } else if (from === square) {
-        // Tap same square again: deselect
-        premoveFromRef.current = null;
-        premoveRef.current = null;
-        boardRef.current?.resetAllHighlightedSquares();
-      } else {
-        // Second tap: queue the premove
-        premoveRef.current = { from, to: square };
-        premoveFromRef.current = null;
-        boardRef.current?.resetAllHighlightedSquares();
-        boardRef.current?.highlight({ square: from, color: '#f6a82566' });
-        boardRef.current?.highlight({ square,       color: '#f6a82566' });
-      }
-    },
-    [setup.color],
-  );
+  const handlePremove = useCallback((from: Square, to: Square) => {
+    premoveRef.current = { from, to };
+    boardRef.current?.highlight({ square: from, color: '#f6a82566' });
+    boardRef.current?.highlight({ square: to,   color: '#f6a82566' });
+  }, []);
 
   // Cancel any partial premove selection once the engine animation finishes
-  // and control returns to the player (overlay disappears).
+  // and control returns to the player.
   useEffect(() => {
     if (state.phase === 'GAME_PHASE' && !isAnimating) {
-      premoveFromRef.current = null;
+      boardRef.current?.clearPremoveSelection();
     }
   }, [state.phase, isAnimating]);
 
   const handleReset = useCallback(() => {
     premoveRef.current = null;
-    premoveFromRef.current = null;
     resetGame();
     boardRef.current?.resetBoard();
   }, [resetGame]);
-
-  // gestureEnabled only when it's the human player's turn.
-  // OPENING_PHASE uses the book (no engine needed) so we skip the isEngineReady gate.
-  // GAME_PHASE requires the engine to be ready (for move validation / prefetch).
-  // Uses isAnimating (state) not animatingRef so React re-renders when it clears.
-  const gestureEnabled =
-    !isAnimating &&
-    ((state.phase === 'GAME_PHASE' && isEngineReady) ||
-      (state.phase === 'OPENING_PHASE' && !isOpponentOpeningTurn));
 
   const modeLabel = setup.mode === 'free' ? 'Free Mode' : 'Theory Mode';
 
@@ -341,7 +297,7 @@ export default function GameScreen() {
           ref={boardRef}
           boardSize={SCREEN_WIDTH}
           onMove={handleBoardMove}
-          gestureEnabled={gestureEnabled}
+          onPremove={handlePremove}
           flipped={setup.color === 'black'}
           colors={{
             black: '#b58863',
@@ -350,18 +306,6 @@ export default function GameScreen() {
           withLetters={false}
           withNumbers={false}
         />
-        {/* Transparent premove overlay — active while Stockfish thinks OR animates.
-            Phase is already GAME_PHASE during animation (requestEngineMove sets it
-            before returning), so we must cover both ENGINE_TURN and the animated phase. */}
-        {(state.phase === 'ENGINE_TURN' ||
-          (state.phase === 'GAME_PHASE' && isAnimating)) &&
-          isEngineReady && (
-          <View
-            style={styles.premoveOverlay}
-            onStartShouldSetResponder={() => true}
-            onResponderGrant={handlePremoveOverlayPress}
-          />
-        )}
       </View>
 
       {/* Bottom controls — above Android nav bar */}
@@ -421,9 +365,6 @@ const styles = StyleSheet.create({
   },
   boardWrapper: {
     alignSelf: 'center',
-  },
-  premoveOverlay: {
-    ...StyleSheet.absoluteFillObject,
   },
   controls: {
     flexDirection: 'row',

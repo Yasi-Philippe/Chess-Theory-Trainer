@@ -283,7 +283,7 @@ index dc401c3..c939d02 100644
      toPosition,
      toTranslation
 diff --git a/node_modules/react-native-chessboard/src/components/piece/index.tsx b/node_modules/react-native-chessboard/src/components/piece/index.tsx
-index bbbd539..953604f 100644
+index bbbd539..69fd448 100644
 --- a/node_modules/react-native-chessboard/src/components/piece/index.tsx
 +++ b/node_modules/react-native-chessboard/src/components/piece/index.tsx
 @@ -27,6 +27,7 @@ type PieceProps = {
@@ -294,7 +294,38 @@ index bbbd539..953604f 100644
    enable: (activate: boolean) => void;
  };
  
-@@ -134,12 +135,21 @@ const Piece = React.memo(
+@@ -37,17 +38,25 @@ const Piece = React.memo(
+       const refs = usePieceRefs();
+       const pieceEnabled = useSharedValue(true);
+       const { isPromoting } = useBoardPromotion();
+-      const { onSelectPiece, onMove, selectedSquare, turn } =
+-        useBoardOperations();
++      const {
++        onSelectPiece,
++        onMove,
++        selectedSquare,
++        turn,
++        onSelectPremovePiece,
++        onQueuePremove,
++        clearSelection,
++      } = useBoardOperations();
+ 
+       const {
+         durations: { move: moveDuration },
+-        gestureEnabled: gestureEnabledFromChessboardProps,
+       } = useChessboardProps();
+ 
++      // gestureEnabled is purely turn-based (SharedValue) — no React re-renders
++      // needed when the engine finishes its turn, so gesture re-activation is instant.
+       const gestureEnabled = useDerivedValue(
+-        () => turn.value === id.charAt(0) && gestureEnabledFromChessboardProps,
+-        [id, gestureEnabledFromChessboardProps]
++        () => turn.value === id.charAt(0),
++        [id]
+       );
+ 
+       const { toPosition, toTranslation } = useReversePiecePosition();
+@@ -134,12 +143,21 @@ const Piece = React.memo(
              moveTo: (to: Square) => {
                return moveTo(square, to);
              },
@@ -317,15 +348,45 @@ index bbbd539..953604f 100644
        );
  
        const onStartTap = useCallback(
-@@ -193,7 +203,7 @@ const Piece = React.memo(
-       ]);
+@@ -176,12 +194,29 @@ const Piece = React.memo(
+           runOnJS(globalMoveTo)(move);
+           return;
+         }
+-        if (!gestureEnabled.value) return;
++        if (!gestureEnabled.value) {
++          // Engine's turn: handle premove interactions.
++          if (previousTappedSquare !== null && previousTappedSquare !== currentSquare) {
++            // Second tap on a different square → queue premove destination
++            // (handles captures where PlaceholderDot is blocked by piece gesture)
++            runOnJS(onQueuePremove)(previousTappedSquare, currentSquare);
++          } else if (previousTappedSquare === currentSquare) {
++            // Tap same piece again → deselect
++            runOnJS(clearSelection)();
++          } else {
++            // First tap → show legal destinations as grey dots
++            runOnJS(onSelectPremovePiece)(currentSquare);
++          }
++          return;
++        }
+         scale.value = withTiming(1.2);
+         onStartTap(square);
+       }, [
++        clearSelection,
+         gestureEnabled.value,
+         globalMoveTo,
++        onQueuePremove,
++        onSelectPremovePiece,
+         onStartTap,
+         scale,
+         selectedSquare.value,
+@@ -215,6 +250,7 @@ const Piece = React.memo(
+           );
+         })
+         .onFinalize(() => {
++          isGestureActive.value = false;
+           scale.value = withTiming(1);
+         });
  
-       const gesture = Gesture.Pan()
--        .enabled(!isPromoting && pieceEnabled.value)
-+        .enabled(!isPromoting && pieceEnabled.value && gestureEnabledFromChessboardProps)
-         .onBegin(() => {
-           offsetX.value = translateX.value;
-           offsetY.value = translateY.value;
 diff --git a/node_modules/react-native-chessboard/src/components/pieces.tsx b/node_modules/react-native-chessboard/src/components/pieces.tsx
 index 5410d88..a0dd786 100644
 --- a/node_modules/react-native-chessboard/src/components/pieces.tsx
@@ -362,11 +423,74 @@ index 5410d88..a0dd786 100644
                  square={square}
                  size={pieceSize}
                />
+diff --git a/node_modules/react-native-chessboard/src/context/board-context-provider.tsx b/node_modules/react-native-chessboard/src/context/board-context-provider.tsx
+index 10f625c..f440ef2 100644
+--- a/node_modules/react-native-chessboard/src/context/board-context-provider.tsx
++++ b/node_modules/react-native-chessboard/src/context/board-context-provider.tsx
+@@ -38,6 +38,8 @@ const ChessboardContextProviderComponent = React.forwardRef<
+         chessboardRef.current?.resetBoard(params);
+         boardOperationsRef.current?.reset();
+       },
++      clearPremoveSelection: () =>
++        boardOperationsRef.current?.clearPremoveSelection(),
+     };
+   }, []);
+ 
 diff --git a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx b/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
-index 2fc9565..846b311 100644
+index 2fc9565..eb7df44 100644
 --- a/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
 +++ b/node_modules/react-native-chessboard/src/context/board-operations-context/index.tsx
-@@ -69,19 +69,14 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+@@ -1,3 +1,4 @@
++import { Chess } from 'chess.js';
+ import type { PieceType, Square } from 'chess.js';
+ import React, {
+   createContext,
+@@ -25,6 +26,9 @@ type BoardOperationsContextType = {
+   isPromoting: (from: Square, to: Square) => boolean;
+   selectedSquare: Animated.SharedValue<Square | null>;
+   turn: Animated.SharedValue<'w' | 'b'>;
++  onSelectPremovePiece: (square: Square) => void;
++  onQueuePremove: (from: Square, to: Square) => void;
++  clearSelection: () => void;
+ };
+ 
+ const BoardOperationsContext = createContext<BoardOperationsContextType>(
+@@ -33,6 +37,7 @@ const BoardOperationsContext = createContext<BoardOperationsContextType>(
+ 
+ export type BoardOperationsRef = {
+   reset: () => void;
++  clearPremoveSelection: () => void;
+ };
+ 
+ const BoardOperationsContextProviderComponent = React.forwardRef<
+@@ -44,8 +49,9 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+   const {
+     pieceSize,
+     onMove: onChessboardMoveCallback,
++    onPremove: onPremoveCallback,
+     colors: { checkmateHighlight },
+-  } = useChessboardProps();
++  } = useChessboardProps() as any;
+   const { toTranslation } = useReversePiecePosition();
+   const selectableSquares = useSharedValue<Square[]>([]);
+   const selectedSquare = useSharedValue<Square | null>(null);
+@@ -59,29 +65,29 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+     () => ({
+       reset: () => {
+         selectableSquares.value = [];
++        selectedSquare.value = null;
+         controller?.resetAllHighlightedSquares();
+         turn.value = chess.turn();
+       },
++      clearPremoveSelection: () => {
++        selectableSquares.value = [];
++        selectedSquare.value = null;
++      },
+     }),
+-    [chess, controller, selectableSquares, turn]
++    [chess, controller, selectableSquares, selectedSquare, turn]
+   );
+ 
    const isPromoting = useCallback(
      (from: Square, to: Square) => {
        if (!to.includes('8') && !to.includes('1')) return false;
@@ -388,36 +512,118 @@ index 2fc9565..846b311 100644
    );
  
    const findKing = useCallback(
-@@ -187,19 +182,11 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+@@ -187,32 +193,65 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
      (square: Square) => {
        selectedSquare.value = square;
  
 -      const validSquares = (chess.moves({
 -        square,
 -      }) ?? []) as Square[];
--
++      // Use verbose moves so we get the actual target square for every move
++      // type, including castling (which would otherwise appear as 'O-O'/'O-O-O'
++      // in SAN and never match the target square string used by PlaceholderDot).
++      const validMoves = (chess.moves({ square, verbose: true }) ?? []) as any[];
++      selectableSquares.value = validMoves.map((move: any) => move.to as Square);
++    },
++    [chess, selectableSquares, selectedSquare]
++  );
+ 
 -      // eslint-disable-next-line no-shadow
 -      selectableSquares.value = validSquares.map((square) => {
 -        const splittedSquare = square.split('x');
 -        if (splittedSquare.length === 0) {
 -          return square;
 -        }
--
++  const clearSelection = useCallback(() => {
++    selectedSquare.value = null;
++    selectableSquares.value = [];
++  }, [selectedSquare, selectableSquares]);
+ 
 -        return splittedSquare[splittedSquare.length - 1] as Square;
 -      });
-+      // Use verbose moves so we get the actual target square for every move
-+      // type, including castling (which would otherwise appear as 'O-O'/'O-O-O'
-+      // in SAN and never match the target square string used by PlaceholderDot).
-+      const validMoves = (chess.moves({ square, verbose: true }) ?? []) as any[];
-+      selectableSquares.value = validMoves.map((move: any) => move.to as Square);
++  const onSelectPremovePiece = useCallback(
++    (square: Square) => {
++      try {
++        const piece = chess.get(square);
++        if (!piece) { clearSelection(); return; }
++        // Clone position with turn swapped to this piece's color so we can
++        // compute legal destinations regardless of whose turn it is.
++        const fenParts = chess.fen().split(' ');
++        fenParts[1] = piece.color;
++        const clone = new Chess(fenParts.join(' '));
++        const validMoves = (clone.moves({ square, verbose: true }) ?? []) as any[];
++        selectedSquare.value = square;
++        selectableSquares.value = validMoves.map((m: any) => m.to as Square);
++      } catch {
++        clearSelection();
++      }
      },
-     [chess, selectableSquares, selectedSquare]
+-    [chess, selectableSquares, selectedSquare]
++    [chess, clearSelection, selectedSquare, selectableSquares]
++  );
++
++  const onQueuePremove = useCallback(
++    (from: Square, to: Square) => {
++      clearSelection();
++      onPremoveCallback?.(from, to);
++    },
++    [clearSelection, onPremoveCallback]
    );
+ 
+   const moveTo = useCallback(
+     (to: Square) => {
+       if (selectedSquare.value != null) {
+-        controller?.move({ from: selectedSquare.value, to: to });
++        const from = selectedSquare.value;
++        const validMoves = (chess.moves({ verbose: true }) ?? []) as any[];
++        const isValid = validMoves.some((m: any) => m.from === from && m.to === to);
++        if (isValid) {
++          controller?.move({ from, to });
++        } else {
++          // Wrong turn or illegal — treat as a premove destination
++          onQueuePremove(from, to);
++        }
+         return true;
+       }
+       return false;
+     },
+-    [controller, selectedSquare.value]
++    [chess, controller, onQueuePremove, selectedSquare]
+   );
+ 
+   const value = useMemo(() => {
+@@ -224,12 +263,18 @@ const BoardOperationsContextProviderComponent = React.forwardRef<
+       selectedSquare,
+       isPromoting,
+       turn,
++      onSelectPremovePiece,
++      onQueuePremove,
++      clearSelection,
+     };
+   }, [
++    clearSelection,
+     isPromoting,
+     moveTo,
+     onMove,
++    onQueuePremove,
+     onSelectPiece,
++    onSelectPremovePiece,
+     selectableSquares,
+     selectedSquare,
+     turn,
 diff --git a/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx b/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx
-index 3966cd9..ca005f4 100644
+index 3966cd9..b383cf5 100644
 --- a/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx
 +++ b/node_modules/react-native-chessboard/src/context/board-refs-context/index.tsx
-@@ -76,6 +76,24 @@ const BoardRefsContextProviderComponent = React.forwardRef<
+@@ -34,6 +34,7 @@ export type ChessboardRef = {
+   resetAllHighlightedSquares: () => void;
+   resetBoard: (fen?: string) => void;
+   getState: () => ChessboardState;
++  clearPremoveSelection: () => void;
+ };
+ 
+ const BoardRefsContextProviderComponent = React.forwardRef<
+@@ -76,6 +77,24 @@ const BoardRefsContextProviderComponent = React.forwardRef<
      ref,
      () => ({
        move: ({ from, to }) => {
@@ -442,6 +648,42 @@ index 3966cd9..ca005f4 100644
          return pieceRefs?.current?.[from].current?.moveTo?.(to);
        },
        highlight: ({ square, color }) => {
+diff --git a/node_modules/react-native-chessboard/src/context/props-context/index.tsx b/node_modules/react-native-chessboard/src/context/props-context/index.tsx
+index 448aa9c..0aea0ea 100644
+--- a/node_modules/react-native-chessboard/src/context/props-context/index.tsx
++++ b/node_modules/react-native-chessboard/src/context/props-context/index.tsx
+@@ -1,4 +1,4 @@
+-import type { Move } from 'chess.js';
++import type { Move, Square } from 'chess.js';
+ import React, { useMemo } from 'react';
+ import { Dimensions } from 'react-native';
+ import type { PieceType } from '../../types';
+@@ -54,6 +54,12 @@ type ChessboardProps = {
+    * It's a particularly useful callback if you want to execute an instruction after a move.
+    */
+   onMove?: (info: ChessMoveInfo) => void;
++  /**
++   * Called when the user queues a premove (taps a piece then a destination while
++   * it is the opponent's turn). The caller should store and execute the move once
++   * the engine finishes.
++   */
++  onPremove?: (from: Square, to: Square) => void;
+   /**
+    * Useful if you want to customise the default colors used in the chessboard.
+    */
+diff --git a/node_modules/react-native-chessboard/src/index.tsx b/node_modules/react-native-chessboard/src/index.tsx
+index 7266de4..9d7ea91 100644
+--- a/node_modules/react-native-chessboard/src/index.tsx
++++ b/node_modules/react-native-chessboard/src/index.tsx
+@@ -48,6 +48,8 @@ const ChessboardContainerComponent = React.forwardRef<
+         chessboardRef.current?.resetAllHighlightedSquares(),
+       getState: () => chessboardRef?.current?.getState() as ChessboardState,
+       resetBoard: (params) => chessboardRef.current?.resetBoard(params),
++      clearPremoveSelection: () =>
++        chessboardRef.current?.clearPremoveSelection(),
+     }),
+     []
+   );
 diff --git a/node_modules/react-native-chessboard/src/notation.ts b/node_modules/react-native-chessboard/src/notation.ts
 index 1484f29..6d02a44 100644
 --- a/node_modules/react-native-chessboard/src/notation.ts
