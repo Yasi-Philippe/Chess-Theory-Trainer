@@ -6,6 +6,7 @@ import { StockfishMove, WDL, PlayerColor } from '../types';
 
 const ANALYSIS_DEPTH = 8;
 const MULTI_PV = 10;
+const ANALYSIS_TIMEOUT_MS = 8000;
 
 interface UseStockfishReturn {
   webviewRef: React.RefObject<WebView>;
@@ -14,6 +15,8 @@ interface UseStockfishReturn {
   htmlUri: string;
   onWebViewMessage: (event: { nativeEvent: { data: string } }) => void;
   isEngineReady: boolean;
+  isError: boolean;
+  errorMessage: string | null;
 }
 
 // ─── HTML parsing ─────────────────────────────────────────────────────────────
@@ -155,6 +158,8 @@ export function useStockfish(): UseStockfishReturn {
   const webviewRef = useRef<WebView>(null);
   const [htmlUri, setHtmlUri] = useState('');
   const [isEngineReady, setIsEngineReady] = useState(false);
+  const [isError, setIsError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const pendingAnalysis = useRef<{
     resolve: (moves: StockfishMove[]) => void;
@@ -177,15 +182,14 @@ export function useStockfish(): UseStockfishReturn {
         const scriptContent = await FileSystem.readAsStringAsync(asset.localUri!);
         console.log('[Stockfish] Script loaded, length =', scriptContent.length);
 
-        // Write the full bridge HTML to the cache dir and hand the WebView a
-        // file:// URI. This avoids serialising 1.5 MB across the RN bridge on
-        // every render, which was causing the long hang on the loading screen.
         const htmlPath = FileSystem.cacheDirectory + 'stockfish-bridge.html';
         await FileSystem.writeAsStringAsync(htmlPath, buildBridgeHtml(scriptContent));
         console.log('[Stockfish] Bridge HTML written to', htmlPath);
         setHtmlUri(htmlPath);
       } catch (e) {
         console.error('[Stockfish] Failed to load engine:', e);
+        setIsError(true);
+        setErrorMessage('Engine failed to load. Please restart the app.');
       }
     }
     loadEngine();
@@ -224,7 +228,7 @@ export function useStockfish(): UseStockfishReturn {
 
   const analyse = useCallback(
     (fen: string, multiPV: number): Promise<StockfishMove[]> => {
-      return new Promise((resolve, reject) => {
+      const analysisPromise = new Promise<StockfishMove[]>((resolve, reject) => {
         if (pendingAnalysis.current) {
           sendCommand('stop');
           pendingAnalysis.current.reject(new Error('Cancelled'));
@@ -234,6 +238,25 @@ export function useStockfish(): UseStockfishReturn {
         sendCommand(`position fen ${fen}`);
         sendCommand(`setoption name MultiPV value ${multiPV}`);
         sendCommand(`go depth ${ANALYSIS_DEPTH}`);
+      });
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Engine timeout')), ANALYSIS_TIMEOUT_MS),
+      );
+
+      return Promise.race([analysisPromise, timeoutPromise]).catch(err => {
+        // Clean up pending state on timeout or error
+        if (pendingAnalysis.current) {
+          sendCommand('stop');
+          pendingAnalysis.current = null;
+        }
+        const msg = err instanceof Error ? err.message : 'Engine error';
+        if (msg !== 'Cancelled') {
+          console.error('[Stockfish] Analysis error:', msg);
+          setIsError(true);
+          setErrorMessage('Engine failed to respond. Please restart the app.');
+        }
+        throw err;
       });
     },
     [sendCommand],
@@ -263,5 +286,7 @@ export function useStockfish(): UseStockfishReturn {
     htmlUri,
     onWebViewMessage,
     isEngineReady,
+    isError,
+    errorMessage,
   };
 }

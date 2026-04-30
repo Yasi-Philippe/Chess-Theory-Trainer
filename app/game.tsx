@@ -9,10 +9,10 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
-import Chessboard from 'react-native-chessboard';
-import type { ChessboardRef } from 'react-native-chessboard';
-import type { Move, Square } from 'chess.js';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { ChessBoard } from '../src/components/ChessBoard';
+import type { BoardRef } from '../src/components/ChessBoard';
+import type { Square } from '../src/components/ChessBoard/types';
 import { GameHUD } from '../src/components/GameHUD/GameHUD';
 import { MissIndicator } from '../src/components/MissIndicator/MissIndicator';
 import { useChessGame } from '../src/hooks/useChessGame';
@@ -22,7 +22,6 @@ import type { PlayerColor, Opening } from '../src/types';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
-// Free-mode fallback (no opening needed)
 const FREE_MODE_FALLBACK = {
   opening: null as Opening | null,
   color: 'white' as PlayerColor,
@@ -34,21 +33,14 @@ export default function GameScreen() {
   const insets = useSafeAreaInsets();
   const setup = useGameStore(state => state.setup) ?? FREE_MODE_FALLBACK;
 
-  const boardRef = useRef<ChessboardRef>(null);
-  // Ref for synchronous animation guard (used inside callbacks without stale closure risk)
-  const animatingRef = useRef(false);
-  // State mirror so premove-clear effect re-fires after animations complete
-  const [isAnimating, setIsAnimating] = useState(false);
-
-  // Premove: queued move to execute once the engine finishes its turn
+  const boardRef = useRef<BoardRef>(null);
   const premoveRef = useRef<{ from: Square; to: Square; promotion?: string } | null>(null);
 
-  function setAnimating(value: boolean) {
-    animatingRef.current = value;
-    setIsAnimating(value);
-  }
+  // Guards the ENGINE_TURN effect: prevents a new engine move from firing while
+  // a board animation is still in progress (engine move, opening reply, premove).
+  const [isAnimating, setIsAnimating] = useState(false);
 
-  const { webviewRef, getBestMove, getTopMove, htmlUri, onWebViewMessage, isEngineReady } =
+  const { webviewRef, getBestMove, getTopMove, htmlUri, onWebViewMessage, isEngineReady, isError, errorMessage } =
     useStockfish();
 
   const {
@@ -67,13 +59,13 @@ export default function GameScreen() {
     getTopMove,
   });
 
-  // When the user presses "Try Again" on the game-over screen we navigate
-  // back to this screen (no new mount, engine stays warm).  Reset everything
-  // so the game starts fresh.
-  // Read phase via ref so the callback stays stable and only fires on focus
-  // events — NOT every time state.phase changes.
+  // Always-fresh refs so async callbacks never close over stale values.
   const stateRef = useRef(state);
   stateRef.current = state;
+  const onPlayerMoveRef = useRef(onPlayerMove);
+  onPlayerMoveRef.current = onPlayerMove;
+
+  // Reset board on re-focus after game-over (Try Again flow).
   useFocusEffect(
     useCallback(() => {
       if (stateRef.current.phase === 'GAME_OVER') {
@@ -84,152 +76,134 @@ export default function GameScreen() {
     }, [resetGame]),
   );
 
-  // Navigate to game-over when game ends.
-  // Use a 1.5 s delay so the best-move highlight is visible before leaving.
+  // Navigate to game-over screen after a short delay so the best-move highlight
+  // is visible before leaving.
   useEffect(() => {
     if (state.phase !== 'GAME_OVER') return;
     const timer = setTimeout(() => {
-      router.push({
-        pathname: '/game-over',
-        params: { score: String(state.moveCount) },
-      });
+      router.push({ pathname: '/game-over', params: { score: String(state.moveCount) } });
     }, 1500);
     return () => clearTimeout(timer);
   }, [state.phase]);
 
-  /**
-   * Wait for Stockfish to reply, animate the piece, then execute any queued premove.
-   * setAnimating is deferred until we actually have a move to animate — keeping the
-   * premove overlay active throughout the thinking phase.
-   */
+  // ─── Engine move + queued premove execution ───────────────────────────────
+
   const playEngineMove = useCallback(async () => {
-    // Fetch the engine move first (Stockfish thinks here; overlay stays visible)
     const engineMove = await requestEngineMove();
 
-    // Now block gestures for the duration of the animation only
-    setAnimating(true);
+    setIsAnimating(true);
     try {
       if (engineMove) {
         await boardRef.current?.move({ from: engineMove.from, to: engineMove.to });
       }
-    } finally {
-      setAnimating(false);
-    }
 
-    // Execute queued premove now that the board is idle and phase is GAME_PHASE
-    const pm = premoveRef.current;
-    if (pm) {
-      premoveRef.current = null;
-      await new Promise<void>(r => setTimeout(r, 50));
-      boardRef.current?.resetAllHighlightedSquares();
-      boardRef.current?.move({ from: pm.from, to: pm.to });
+      // Execute any queued premove now that the engine animation is done.
+      const pm = premoveRef.current;
+      if (pm) {
+        premoveRef.current = null;
+        boardRef.current?.clearPremoveSelection();
+        boardRef.current?.resetAllHighlightedSquares();
+
+        const validFen = stateRef.current.lastValidFen;
+        const result = await onPlayerMoveRef.current(pm.from, pm.to, pm.promotion);
+
+        if (result.outcome === 'wrong_move' || result.outcome === 'illegal') {
+          // Premove turned out to be invalid in the new position — revert board.
+          boardRef.current?.resetBoard(validFen);
+        } else {
+          // Animate the premove visually (updates board chess state too).
+          await boardRef.current?.move({ from: pm.from, to: pm.to });
+          // Opening phase: also animate the opponent's reply if one was returned.
+          if (result.engineMove) {
+            await boardRef.current?.move({
+              from: result.engineMove.from,
+              to: result.engineMove.to,
+            });
+          }
+        }
+      }
+    } finally {
+      setIsAnimating(false);
     }
   }, [requestEngineMove]);
 
-  // Trigger Stockfish move whenever phase becomes ENGINE_TURN.
-  // Also depends on isEngineReady: when playing as Black in free mode the phase
-  // starts as ENGINE_TURN before the engine is loaded, so we must re-fire once
-  // the engine becomes ready (otherwise the commands are sent to a null ref and
-  // the analysis promise never resolves).
+  // Fire engine move whenever phase becomes ENGINE_TURN and the engine is loaded.
+  // `isAnimating` prevents a re-fire mid-animation (e.g. during premove execution).
   useEffect(() => {
-    if (state.phase === 'ENGINE_TURN' && isEngineReady) {
+    if (state.phase === 'ENGINE_TURN' && isEngineReady && !isAnimating) {
       playEngineMove();
     }
-  }, [state.phase, isEngineReady]);
+    // playEngineMove is stable (depends only on requestEngineMove which depends on getBestMove)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.phase, isEngineReady, isAnimating, playEngineMove]);
 
-  // Warm up the prefetch cache as soon as the engine is ready and it's the
-  // player's first move in GAME_PHASE (Free Mode as White).
+  // Warm up prefetch cache on the player's first move in free mode.
+  // state.moveCount guards against re-firing on subsequent moves.
   useEffect(() => {
     if (isEngineReady && state.phase === 'GAME_PHASE' && state.moveCount === 0) {
       warmUp(state.lastValidFen);
     }
-  }, [isEngineReady, state.phase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEngineReady, state.phase, state.moveCount, warmUp]);
 
-  /**
-   * When it's the opponent's turn in the opening (e.g. playing as Black,
-   * White hasn't moved yet), auto-play the opponent's opening move.
-   */
+  // Auto-play the opponent's opening move when it's their turn.
   useEffect(() => {
     if (!isOpponentOpeningTurn) return;
-
     const timer = setTimeout(async () => {
-      setAnimating(true);
+      setIsAnimating(true);
       try {
         const result = playOpponentOpeningMove();
         if (result) {
           await boardRef.current?.move({ from: result.move.from, to: result.move.to });
         }
       } finally {
-        setAnimating(false);
+        setIsAnimating(false);
       }
-    }, 400); // short delay so the board is ready
-
+    }, 400);
     return () => clearTimeout(timer);
-  }, [isOpponentOpeningTurn, state.openingMoveIndex]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpponentOpeningTurn, state.openingMoveIndex, playOpponentOpeningMove]);
 
-  /**
-   * Intercept player moves from the board.
-   */
-  const handleBoardMove = useCallback(
-    async ({ move }: { move: Move; state: any }) => {
-      if (animatingRef.current) return;
+  // ─── Board callbacks ───────────────────────────────────────────────────────
 
-      const from = move.from as Square;
-      const to = move.to as Square;
-      const promotion = move.promotion;
+  // Called by ChessBoard after the player completes a valid gesture move.
+  // Uses refs to stay stable across re-renders (no stale dependency issues).
+  const handleMove = useCallback(async (params: { from: Square; to: Square; promotion?: string }) => {
+    const { from, to, promotion } = params;
+    const validFen = stateRef.current.lastValidFen;
+    const result = await onPlayerMoveRef.current(from, to, promotion);
 
-      // Snapshot the last valid FEN before async processing can mutate state.
-      // We use a local variable captured before the await so it's never stale.
-      const validFen = state.lastValidFen;
-      const result = await onPlayerMove(from, to, promotion);
-
-      if (result.outcome === 'wrong_move' || result.outcome === 'illegal') {
-        // Revert the board first (deferred to beat React 18 batching).
-        setTimeout(() => boardRef.current?.resetBoard(validFen), 0);
-        // On 2nd miss: highlight the best move from/to squares after the board
-        // has reverted, giving the player a visual cue before game-over navigation.
-        if (result.bestMove) {
-          setTimeout(() => {
-            boardRef.current?.highlight({ square: result.bestMove!.from, color: '#f6f669aa' });
-            boardRef.current?.highlight({ square: result.bestMove!.to,   color: '#baca44aa' });
-          }, 50);
-        }
-        return;
+    if (result.outcome === 'wrong_move' || result.outcome === 'illegal') {
+      boardRef.current?.resetBoard(validFen);
+      // Red flash on the square where the wrong move landed, then best-move hint
+      boardRef.current?.flashSquare(to, '#ef444466', 400);
+      if (result.bestMove) {
+        setTimeout(() => {
+          boardRef.current?.highlight({ square: result.bestMove!.from, color: '#f6f669aa' });
+          boardRef.current?.highlight({ square: result.bestMove!.to,   color: '#baca44aa' });
+        }, 50);
       }
+      return;
+    }
 
-      // Opening phase: board already shows player's move; animate opponent's reply
-      if (result.engineMove && result.outcome === 'accepted') {
-        setAnimating(true);
-        try {
-          await boardRef.current?.move({
-            from: result.engineMove.from,
-            to: result.engineMove.to,
-          });
-        } finally {
-          setAnimating(false);
-        }
+    // Opening phase: animate the opponent's reply returned by onPlayerMove.
+    if (result.engineMove && result.outcome === 'accepted') {
+      setIsAnimating(true);
+      try {
+        await boardRef.current?.move({
+          from: result.engineMove.from,
+          to: result.engineMove.to,
+        });
+      } finally {
+        setIsAnimating(false);
       }
-    },
-    [onPlayerMove, state.lastValidFen],
-  );
-
-  /**
-   * Called by the board when the user selects a piece + destination during
-   * ENGINE_TURN. Queues the move and shows orange highlights.
-   */
-  const handlePremove = useCallback((from: Square, to: Square) => {
-    premoveRef.current = { from, to };
-    boardRef.current?.highlight({ square: from, color: '#f6a82566' });
-    boardRef.current?.highlight({ square: to,   color: '#f6a82566' });
+    }
   }, []);
 
-  // Cancel any partial premove selection once the engine animation finishes
-  // and control returns to the player.
-  useEffect(() => {
-    if (state.phase === 'GAME_PHASE' && !isAnimating) {
-      boardRef.current?.clearPremoveSelection();
-    }
-  }, [state.phase, isAnimating]);
+  // Called by ChessBoard when the player queues a premove (engine turn).
+  const handlePremove = useCallback((from: Square, to: Square) => {
+    premoveRef.current = { from, to };
+  }, []);
 
   const handleReset = useCallback(() => {
     premoveRef.current = null;
@@ -237,11 +211,12 @@ export default function GameScreen() {
     boardRef.current?.resetBoard();
   }, [resetGame]);
 
+  const boardPlayerColor = setup.color === 'white' ? 'w' as const : 'b' as const;
   const modeLabel = setup.mode === 'free' ? 'Free Mode' : 'Theory Mode';
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      {/* Hidden Stockfish WebView — zero-size, off-screen */}
+      {/* Hidden Stockfish WebView */}
       {htmlUri ? (
         <WebView
           ref={webviewRef}
@@ -259,7 +234,6 @@ export default function GameScreen() {
         />
       ) : null}
 
-      {/* Back button row + engine thinking indicator */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backChip}>
           <Text style={styles.backChipText}>← {modeLabel}</Text>
@@ -272,7 +246,6 @@ export default function GameScreen() {
         )}
       </View>
 
-      {/* HUD: opening name, score, phase */}
       <GameHUD
         gameState={{
           phase: state.phase,
@@ -288,42 +261,37 @@ export default function GameScreen() {
         feedbackMessage={state.feedbackMessage}
       />
 
-      {/* Miss indicator dots */}
       <MissIndicator consecutiveMisses={state.consecutiveMisses} />
 
-      {/* Chess board — flipped for Black so h8 is bottom-left */}
       <View style={styles.boardWrapper}>
-        <Chessboard
+        <ChessBoard
           ref={boardRef}
           boardSize={SCREEN_WIDTH}
-          onMove={handleBoardMove}
-          onPremove={handlePremove}
+          playerColor={boardPlayerColor}
           flipped={setup.color === 'black'}
-          colors={{
-            black: '#b58863',
-            white: '#f0d9b5',
-          }}
+          colors={{ light: '#f0d9b5', dark: '#b58863' }}
+          onMove={handleMove}
+          onPremove={handlePremove}
           withLetters={false}
           withNumbers={false}
         />
       </View>
 
-      {/* Bottom controls — above Android nav bar */}
       <View style={styles.controls}>
         <TouchableOpacity style={styles.resetButton} onPress={handleReset}>
           <Text style={styles.controlText}>Restart</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.changeButton}
-          onPress={() => router.back()}
-        >
+        <TouchableOpacity style={styles.changeButton} onPress={() => router.back()}>
           <Text style={styles.changeText}>Change Setup</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Engine loading overlay — only block when the engine is actually needed.
-          OPENING_PHASE uses the opening book, so play can start immediately. */}
-      {!isEngineReady && state.phase !== 'OPENING_PHASE' && (
+      {isError && (
+        <View style={styles.engineOverlay}>
+          <Text style={styles.engineErrorText}>⚠ {errorMessage}</Text>
+        </View>
+      )}
+      {!isEngineReady && !isError && state.phase !== 'OPENING_PHASE' && (
         <View style={styles.engineOverlay}>
           <ActivityIndicator size="large" color="#e94560" />
           <Text style={styles.engineLoadingText}>Loading engine…</Text>
@@ -334,16 +302,8 @@ export default function GameScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#1a1a2e',
-  },
-  hiddenWebview: {
-    width: 0,
-    height: 0,
-    position: 'absolute',
-    opacity: 0,
-  },
+  container: { flex: 1, backgroundColor: '#1a1a2e' },
+  hiddenWebview: { width: 0, height: 0, position: 'absolute', opacity: 0 },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -358,20 +318,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
-  backChipText: {
-    color: '#8892a4',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  boardWrapper: {
-    alignSelf: 'center',
-  },
-  controls: {
-    flexDirection: 'row',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
+  backChipText: { color: '#8892a4', fontSize: 13, fontWeight: '600' },
+  boardWrapper: { alignSelf: 'center' },
+  controls: { flexDirection: 'row', gap: 12, paddingHorizontal: 16, paddingVertical: 12 },
   resetButton: {
     flex: 1,
     backgroundColor: '#0f3460',
@@ -386,14 +335,8 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
   },
-  controlText: {
-    color: '#e0e0e0',
-    fontWeight: '700',
-  },
-  changeText: {
-    color: '#8892a4',
-    fontWeight: '600',
-  },
+  controlText: { color: '#e0e0e0', fontWeight: '700' },
+  changeText: { color: '#8892a4', fontWeight: '600' },
   thinkingChip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -403,11 +346,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
-  thinkingChipText: {
-    color: '#8892a4',
-    fontSize: 12,
-    fontWeight: '600',
-  },
+  thinkingChipText: { color: '#8892a4', fontSize: 12, fontWeight: '600' },
   engineOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(26, 26, 46, 0.92)',
@@ -416,9 +355,6 @@ const styles = StyleSheet.create({
     gap: 16,
     zIndex: 999,
   },
-  engineLoadingText: {
-    color: '#8892a4',
-    fontSize: 15,
-    fontWeight: '600',
-  },
+  engineLoadingText: { color: '#8892a4', fontSize: 15, fontWeight: '600' },
+  engineErrorText: { color: '#e94560', fontSize: 15, fontWeight: '600', textAlign: 'center', paddingHorizontal: 24 },
 });

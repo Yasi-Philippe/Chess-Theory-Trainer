@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import { Chess } from 'chess.js';
+import { MISS_LIMIT } from '../constants';
 import type { Square } from 'chess.js';
 import { Opening, OpeningMode, PlayerColor, GamePhase, StockfishMove, WDL } from '../types';
 import { weightedRandomMove } from './useStockfish';
@@ -238,7 +239,7 @@ export function useChessGame({
 
     if (!move || move.san !== expectedSan) {
       const newMisses = consecutiveMisses + 1;
-      if (newMisses >= 2) {
+      if (newMisses >= MISS_LIMIT) {
         const bestVerbose = new Chess(chessRef.current.fen())
           .moves({ verbose: true })
           .find((m: any) => m.san === expectedSan);
@@ -340,7 +341,7 @@ export function useChessGame({
 
     if (!isAccepted) {
       const newMisses = state.consecutiveMisses + 1;
-      if (newMisses >= 2) {
+      if (newMisses >= MISS_LIMIT) {
         const bestUci = acceptableMoves[0].uci;
         const bestMove = {
           from: bestUci.slice(0, 2) as Square,

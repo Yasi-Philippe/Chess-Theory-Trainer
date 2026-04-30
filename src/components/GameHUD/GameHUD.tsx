@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { GameState } from '../../types';
+import { FEEDBACK_COLOR, FEEDBACK_COLOR_DEFAULT, MISS_LIMIT } from '../../constants';
 
 interface GameHUDProps {
   gameState: GameState;
@@ -22,12 +23,9 @@ export function GameHUD({ gameState, feedbackMessage }: GameHUDProps) {
     phaseLabel = 'Game Over';
   }
 
-  const feedbackColor =
-    feedbackMessage?.startsWith('Best') || feedbackMessage?.startsWith('Opening') || feedbackMessage?.endsWith('best move!')
-      ? '#4caf50'
-      : feedbackMessage?.includes('over') || feedbackMessage?.includes('twice')
-      ? '#f44336'
-      : '#ff9800';
+  const feedbackColor = feedbackMessage
+    ? (FEEDBACK_COLOR[feedbackMessage] ?? FEEDBACK_COLOR_DEFAULT)
+    : FEEDBACK_COLOR_DEFAULT;
 
   const modeBadge = openingMode === 'free' ? 'FREE' : 'THEORY';
   const modeBadgeColor = openingMode === 'free' ? '#0f3460' : '#1a0a10';
@@ -56,7 +54,7 @@ export function GameHUD({ gameState, feedbackMessage }: GameHUDProps) {
 
         <View style={styles.stat}>
           <Text style={[styles.statValue, consecutiveMisses > 0 && styles.missValue]}>
-            {consecutiveMisses} / 2
+            {consecutiveMisses} / {MISS_LIMIT}
           </Text>
           <Text style={styles.statLabel}>Misses</Text>
         </View>

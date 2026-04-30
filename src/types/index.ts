@@ -3,11 +3,14 @@ export type PlayerColor = 'white' | 'black';
 /** theory = play through opening theory then free play; free = Stockfish best moves from move 1 */
 export type OpeningMode = 'theory' | 'free';
 
+export type OpeningCategory = 'main_line' | 'advanced';
+
 export interface Opening {
   id: string;
   name: string;
   eco: string;
   color: PlayerColor;
+  category: OpeningCategory;
   /** PGN moves that define the opening (e.g. ["e4", "e5", "Nf3", "Nc6", "Bb5"]) */
   moves: string[];
   description: string;

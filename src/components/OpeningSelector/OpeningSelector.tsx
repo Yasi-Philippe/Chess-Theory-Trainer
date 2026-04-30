@@ -9,8 +9,13 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Opening, PlayerColor, OpeningMode } from '../../types';
-import { OPENINGS_BY_COLOR } from '../../data/openings';
+import { Opening, PlayerColor, OpeningMode, OpeningCategory } from '../../types';
+import { useOpenings } from '../../db/useOpenings';
+
+const CATEGORIES: { key: OpeningCategory; label: string }[] = [
+  { key: 'main_line', label: 'Main Line' },
+  { key: 'advanced',  label: 'Advanced'  },
+];
 
 interface OpeningSelectorProps {
   onSelect: (opening: Opening | null, color: PlayerColor, mode: OpeningMode) => void;
@@ -19,12 +24,13 @@ interface OpeningSelectorProps {
 
 export function OpeningSelector({ onSelect, navigating = false }: OpeningSelectorProps) {
   const insets = useSafeAreaInsets();
-  const [selectedColor, setSelectedColor] = useState<PlayerColor>('white');
-  const [selectedOpening, setSelectedOpening] = useState<Opening | null>(null);
-  const [selectedMode, setSelectedMode] = useState<OpeningMode>('theory');
+  const [selectedColor,    setSelectedColor]    = useState<PlayerColor>('white');
+  const [selectedOpening,  setSelectedOpening]  = useState<Opening | null>(null);
+  const [selectedMode,     setSelectedMode]     = useState<OpeningMode>('theory');
+  const [selectedCategory, setSelectedCategory] = useState<OpeningCategory>('main_line');
   const [search, setSearch] = useState('');
 
-  const allOpenings = OPENINGS_BY_COLOR[selectedColor];
+  const { openings: allOpenings, loading: dbLoading } = useOpenings(selectedCategory, selectedColor);
 
   const filteredOpenings = useMemo(() => {
     if (!search.trim()) return allOpenings;
@@ -36,6 +42,16 @@ export function OpeningSelector({ onSelect, navigating = false }: OpeningSelecto
         o.description.toLowerCase().includes(q),
     );
   }, [allOpenings, search]);
+
+  function handleColorChange(color: PlayerColor) {
+    setSelectedColor(color);
+    setSelectedOpening(null);
+  }
+
+  function handleCategoryChange(category: OpeningCategory) {
+    setSelectedCategory(category);
+    setSelectedOpening(null);
+  }
 
   function handleStart() {
     if (navigating || (selectedMode === 'theory' && !selectedOpening)) return;
@@ -53,10 +69,7 @@ export function OpeningSelector({ onSelect, navigating = false }: OpeningSelecto
           <TouchableOpacity
             key={color}
             style={[styles.colorButton, selectedColor === color && styles.colorButtonActive]}
-            onPress={() => {
-              setSelectedColor(color);
-              setSelectedOpening(null);
-            }}
+            onPress={() => handleColorChange(color)}
           >
             <Text
               style={[
@@ -104,9 +117,32 @@ export function OpeningSelector({ onSelect, navigating = false }: OpeningSelecto
       {/* ── Opening list (Theory Mode only) ── */}
       {selectedMode === 'theory' && (
         <>
+          {/* Category tabs */}
+          <Text style={styles.sectionTitle}>Category</Text>
+          <View style={styles.categoryRow}>
+            {CATEGORIES.map(cat => (
+              <TouchableOpacity
+                key={cat.key}
+                style={[styles.categoryTab, selectedCategory === cat.key && styles.categoryTabActive]}
+                onPress={() => handleCategoryChange(cat.key)}
+              >
+                <Text
+                  style={[
+                    styles.categoryTabText,
+                    selectedCategory === cat.key && styles.categoryTabTextActive,
+                  ]}
+                >
+                  {cat.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           <Text style={styles.sectionTitle}>
             Select opening
-            <Text style={styles.countBadge}> ({filteredOpenings.length})</Text>
+            {!dbLoading && (
+              <Text style={styles.countBadge}> ({filteredOpenings.length})</Text>
+            )}
           </Text>
 
           <TextInput
@@ -117,34 +153,41 @@ export function OpeningSelector({ onSelect, navigating = false }: OpeningSelecto
             onChangeText={setSearch}
           />
 
-          <FlatList
-            data={filteredOpenings}
-            keyExtractor={item => item.id}
-            style={styles.list}
-            keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={[
-                  styles.openingItem,
-                  selectedOpening?.id === item.id && styles.openingItemActive,
-                ]}
-                onPress={() => setSelectedOpening(item)}
-              >
-                <View style={styles.openingHeader}>
-                  <Text style={styles.openingName} numberOfLines={1}>
-                    {item.name}
+          {dbLoading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="small" color="#e94560" />
+              <Text style={styles.loadingText}>Loading openings…</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredOpenings}
+              keyExtractor={item => item.id}
+              style={styles.list}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.openingItem,
+                    selectedOpening?.id === item.id && styles.openingItemActive,
+                  ]}
+                  onPress={() => setSelectedOpening(item)}
+                >
+                  <View style={styles.openingHeader}>
+                    <Text style={styles.openingName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <Text style={styles.openingEco}>{item.eco}</Text>
+                  </View>
+                  <Text style={styles.openingDesc} numberOfLines={2}>
+                    {item.description}
                   </Text>
-                  <Text style={styles.openingEco}>{item.eco}</Text>
-                </View>
-                <Text style={styles.openingDesc} numberOfLines={2}>
-                  {item.description}
-                </Text>
-                <Text style={styles.openingMoves}>
-                  {item.moves.length} moves in theory line
-                </Text>
-              </TouchableOpacity>
-            )}
-          />
+                  <Text style={styles.openingMoves}>
+                    {item.moves.length} moves in theory line
+                  </Text>
+                </TouchableOpacity>
+              )}
+            />
+          )}
         </>
       )}
 
@@ -174,7 +217,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1a1a2e',
     paddingTop: 16,
     paddingHorizontal: 16,
-    paddingBottom: 16, // overridden inline to add safe area inset
+    paddingBottom: 16,
   },
   sectionTitle: {
     color: '#8892a4',
@@ -242,6 +285,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
   },
+  categoryRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  categoryTab: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#0f3460',
+    alignItems: 'center',
+  },
+  categoryTabActive: {
+    backgroundColor: '#0f3460',
+    borderColor: '#0f3460',
+  },
+  categoryTabText: {
+    color: '#555e6e',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  categoryTabTextActive: {
+    color: '#e0e0e0',
+  },
   searchInput: {
     backgroundColor: '#16213e',
     borderRadius: 8,
@@ -252,6 +319,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderWidth: 1,
     borderColor: '#0f3460',
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  loadingText: {
+    color: '#555e6e',
+    fontSize: 13,
   },
   list: {
     flex: 1,
