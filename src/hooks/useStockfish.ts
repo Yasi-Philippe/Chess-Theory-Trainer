@@ -168,6 +168,20 @@ export function useStockfish(): UseStockfishReturn {
     multiPV: number;
   } | null>(null);
 
+  // Each time we send 'stop', the engine replies with a bestmove for the
+  // cancelled analysis. This counter tracks how many such replies to skip
+  // so they don't prematurely resolve the next pending analysis.
+  const stopCountRef = useRef(0);
+
+  // Queued after a 'stop' command. The start callback is executed when 'readyok'
+  // arrives, guaranteeing the engine has fully flushed the stop before the new
+  // 'go'. The reject is stored so we can cancel this queued request if a third
+  // analyse() call arrives before readyok comes back.
+  const pendingPostReadyRef = useRef<{
+    start: () => void;
+    reject: (err: Error) => void;
+  } | null>(null);
+
   useEffect(() => {
     async function loadEngine() {
       try {
@@ -202,19 +216,30 @@ export function useStockfish(): UseStockfishReturn {
   const onWebViewMessage = useCallback(
     (event: { nativeEvent: { data: string } }) => {
       const line = event.nativeEvent.data;
-      // Log every message so we can see if anything comes back at all
       console.log('[WebView→RN]', line.substring(0, 120));
 
       if (line === 'readyok') {
-        console.log('[Stockfish] Engine ready');
-        setIsEngineReady(true);
+        if (pendingPostReadyRef.current) {
+          const { start } = pendingPostReadyRef.current;
+          pendingPostReadyRef.current = null;
+          start();
+        } else {
+          console.log('[Stockfish] Engine ready');
+          setIsEngineReady(true);
+        }
         return;
       }
 
-      if (line.startsWith('bestmove') && pendingAnalysis.current) {
-        const { resolve, moves } = pendingAnalysis.current;
-        pendingAnalysis.current = null;
-        resolve(Array.from(moves.values()));
+      if (line.startsWith('bestmove')) {
+        if (stopCountRef.current > 0) {
+          stopCountRef.current -= 1;
+          return;
+        }
+        if (pendingAnalysis.current) {
+          const { resolve, moves } = pendingAnalysis.current;
+          pendingAnalysis.current = null;
+          resolve(Array.from(moves.values()));
+        }
         return;
       }
 
@@ -229,15 +254,36 @@ export function useStockfish(): UseStockfishReturn {
   const analyse = useCallback(
     (fen: string, multiPV: number): Promise<StockfishMove[]> => {
       const analysisPromise = new Promise<StockfishMove[]>((resolve, reject) => {
+        const startAnalysis = () => {
+          pendingAnalysis.current = { resolve, reject, moves: new Map(), multiPV };
+          sendCommand('ucinewgame');
+          sendCommand(`position fen ${fen}`);
+          sendCommand(`setoption name MultiPV value ${multiPV}`);
+          sendCommand(`go depth ${ANALYSIS_DEPTH}`);
+        };
+
         if (pendingAnalysis.current) {
+          // Cancel the in-flight analysis. Null it out immediately so stale
+          // info/bestmove lines arriving before readyok are ignored.
           sendCommand('stop');
+          stopCountRef.current += 1;
           pendingAnalysis.current.reject(new Error('Cancelled'));
+          pendingAnalysis.current = null;
+
+          // Queue the new analysis behind readyok. The UCI spec guarantees
+          // readyok is sent AFTER the bestmove from the stop, so the engine
+          // is in a clean state before we send the next go.
+          pendingPostReadyRef.current = { start: startAnalysis, reject };
+          sendCommand('isready');
+        } else if (pendingPostReadyRef.current) {
+          // A prior cancel is already waiting for readyok. Reject the queued
+          // analysis's promise (so its 8s timeout doesn't fire as an error)
+          // and replace it with this newer request.
+          pendingPostReadyRef.current.reject(new Error('Cancelled'));
+          pendingPostReadyRef.current = { start: startAnalysis, reject };
+        } else {
+          startAnalysis();
         }
-        pendingAnalysis.current = { resolve, reject, moves: new Map(), multiPV };
-        sendCommand('ucinewgame');
-        sendCommand(`position fen ${fen}`);
-        sendCommand(`setoption name MultiPV value ${multiPV}`);
-        sendCommand(`go depth ${ANALYSIS_DEPTH}`);
       });
 
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -245,10 +291,14 @@ export function useStockfish(): UseStockfishReturn {
       );
 
       return Promise.race([analysisPromise, timeoutPromise]).catch(err => {
-        // Clean up pending state on timeout or error
         if (pendingAnalysis.current) {
           sendCommand('stop');
+          stopCountRef.current += 1;
           pendingAnalysis.current = null;
+        }
+        if (pendingPostReadyRef.current) {
+          pendingPostReadyRef.current.reject(new Error('Cancelled'));
+          pendingPostReadyRef.current = null;
         }
         const msg = err instanceof Error ? err.message : 'Engine error';
         if (msg !== 'Cancelled') {

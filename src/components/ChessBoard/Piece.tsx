@@ -53,11 +53,12 @@ export const Piece = memo(
     const scale = useSharedValue(1);
     const isActive = useSharedValue(false);
 
-    // Reset translate whenever the piece's square changes (piece moved to new position).
-    // Both board-side and translate must be consistent in the same commit.
+    // Reset all animated state when piece.square changes (move committed or board reset).
     useEffect(() => {
       translateX.value = 0;
       translateY.value = 0;
+      scale.value = 1;
+      isActive.value = false;
     }, [piece.square]);
 
     useImperativeHandle(ref, () => ({
@@ -108,22 +109,9 @@ export const Piece = memo(
       .onEnd(e => {
         'worklet';
         if (!isActive.value) return;
-        const dist = Math.sqrt(e.translationX ** 2 + e.translationY ** 2);
-        const isMyTurn = turnSV.value === playerColor;
+        isActive.value = false;
 
-        if (dist < TAP_MAX_DISTANCE) {
-          // Tap
-          translateX.value = withTiming(0, { duration: SNAP_DURATION_MS });
-          translateY.value = withTiming(0, { duration: SNAP_DURATION_MS });
-          scale.value = withTiming(1, { duration: 80 });
-          isActive.value = false;
-          if (isMyTurn) {
-            runOnJS(onTap)(piece.square);
-          } else {
-            runOnJS(onPremoveTap)(piece.square);
-          }
-          return;
-        }
+        const isMyTurn = turnSV.value === playerColor;
 
         // Drag — compute drop square
         const centerX = baseX + squareSize / 2 + e.translationX;
@@ -135,9 +123,11 @@ export const Piece = memo(
         scale.value = withTiming(1, { duration: 80 });
 
         if (!targetSq || targetSq === piece.square) {
+          // Released on the same square — treat as a tap (finger moved but stayed on square).
           translateX.value = withTiming(0, { duration: SNAP_DURATION_MS });
           translateY.value = withTiming(0, { duration: SNAP_DURATION_MS });
-          isActive.value = false;
+          if (isMyTurn) runOnJS(onTap)(piece.square);
+          else runOnJS(onPremoveTap)(piece.square);
           return;
         }
 
@@ -146,14 +136,22 @@ export const Piece = memo(
         } else {
           translateX.value = withTiming(0, { duration: SNAP_DURATION_MS });
           translateY.value = withTiming(0, { duration: SNAP_DURATION_MS });
-          isActive.value = false;
           runOnJS(onPremoveDrop)(piece.square, targetSq);
         }
       })
-      .onFinalize(() => {
+      .onFinalize((e, success) => {
         'worklet';
-        isActive.value = false;
         scale.value = withTiming(1, { duration: 80 });
+        // success=false means the gesture never activated (a true finger tap).
+        // isActive guards against double-firing when onEnd already handled it.
+        if (!success && isActive.value) {
+          translateX.value = withTiming(0, { duration: SNAP_DURATION_MS });
+          translateY.value = withTiming(0, { duration: SNAP_DURATION_MS });
+          const isMyTurn = turnSV.value === playerColor;
+          if (isMyTurn) runOnJS(onTap)(piece.square);
+          else runOnJS(onPremoveTap)(piece.square);
+        }
+        isActive.value = false;
       });
 
     const animatedStyle = useAnimatedStyle(() => ({
@@ -169,6 +167,7 @@ export const Piece = memo(
     return (
       <GestureDetector gesture={gesture}>
         <Animated.View
+          pointerEvents={isMyPiece ? 'auto' : 'none'}
           style={[
             styles.piece,
             { width: squareSize, height: squareSize, left: baseX, top: baseY },

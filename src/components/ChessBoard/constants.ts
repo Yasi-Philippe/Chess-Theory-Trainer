@@ -35,4 +35,4 @@ export const PIECE_COLOR: Record<Color, string> = {
 export const DRAG_SCALE = 1.3;
 export const SNAP_DURATION_MS = 150;
 export const MOVE_ANIM_DURATION_MS = 200;
-export const TAP_MAX_DISTANCE = 8;
+export const TAP_MAX_DISTANCE = 20;

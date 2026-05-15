@@ -13,6 +13,7 @@ export type PiecesRef = {
   animatePiece: (params: MoveData) => Promise<void>;
   snapBack: (square: Square) => void;
   resetTranslate: (square: Square) => void;
+  resetAllTranslates: () => void;
 };
 
 type Props = {
@@ -56,6 +57,11 @@ export const Pieces = memo(
       },
       resetTranslate: (square: Square) => {
         pieceRefs.current.get(square)?.current?.resetTranslate();
+      },
+      resetAllTranslates: () => {
+        for (const ref of pieceRefs.current.values()) {
+          ref.current?.resetTranslate();
+        }
       },
     }));
 

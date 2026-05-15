@@ -69,16 +69,19 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
   const commitMove = useCallback(
     async (from: Square, to: Square, promotion?: string) => {
       isAnimatingSV.value = true;
-      piecesRef.current?.resetTranslate(from);
 
       const castling = detectCastling(boardLogic, from, to);
       if (castling) {
-        // Animate rook concurrently with the board state update
-        piecesRef.current?.resetTranslate(castling.rookFrom);
+        // Rook slides concurrently (fire-and-forget; same duration as king)
+        piecesRef.current?.animatePiece({ from: castling.rookFrom, to: castling.rookTo });
       }
+      // Animate piece to its landing square first, then commit board state.
+      // This makes the drag-release feel fluid — piece slides from drop point to square center.
+      await piecesRef.current?.animatePiece({ from, to });
 
       const result = boardLogic.executeMove({ from, to, promotion });
       if (!result.success) {
+        piecesRef.current?.snapBack(from);
         isAnimatingSV.value = false;
         return false;
       }
@@ -134,7 +137,6 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
       if (selectedSquare && selectableSquares.includes(square)) {
         clearSelection();
         if (!maybePromote(selectedSquare, square)) {
-          piecesRef.current?.snapBack(selectedSquare);
           commitMove(selectedSquare, square);
         }
         return;
@@ -163,14 +165,23 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
   // ─── Player drag drop ─────────────────────────────────────────────────────
   const handleDrop = useCallback(
     (from: Square, to: Square) => {
+      // Allow castling by dragging the king onto the rook's square.
+      let effectiveTo = to;
+      const movingPiece = boardLogic.pieces.find(p => p.square === from);
+      if (movingPiece?.type === 'k' && from[0] === 'e') {
+        const rank = from[1];
+        if (to === (`h${rank}` as Square)) effectiveTo = `g${rank}` as Square;
+        else if (to === (`a${rank}` as Square)) effectiveTo = `c${rank}` as Square;
+      }
+
       const validMoves = boardLogic.getValidMoves(from);
-      if (!validMoves.includes(to)) {
+      if (!validMoves.includes(effectiveTo)) {
         piecesRef.current?.snapBack(from);
         return;
       }
       clearSelection();
-      if (!maybePromote(from, to)) {
-        commitMove(from, to);
+      if (!maybePromote(from, effectiveTo)) {
+        commitMove(from, effectiveTo);
       }
     },
     [boardLogic, clearSelection, commitMove, maybePromote],
@@ -258,6 +269,7 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
 
     resetBoard: (newFen?: string) => {
       boardLogic.resetBoard(newFen);
+      piecesRef.current?.resetAllTranslates();
       turnSV.value = boardLogic.turn;
       clearSelection();
       clearPremove();
