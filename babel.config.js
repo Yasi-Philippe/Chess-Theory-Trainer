@@ -5,7 +5,9 @@ module.exports = function (api) {
       'babel-preset-expo',
     ],
     plugins: [
-      'react-native-reanimated/plugin',
+      // Reanimated 4.x: the worklets babel plugin lives in react-native-worklets,
+      // not react-native-reanimated. Must remain the LAST plugin in the list.
+      'react-native-worklets/plugin',
     ],
   };
 };

@@ -3,8 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useGameStore } from '../src/store/gameStore';
 import { recordGame } from '../src/db/stats';
-
-type GameOverReason = 'two_misses' | 'checkmate' | 'draw' | 'data_error';
+import type { GameOverReason } from '../src/types';
 
 function getContent(moves: number, reason: GameOverReason): {
   title: string;
@@ -55,9 +54,9 @@ export default function GameOverScreen() {
     clearSetup();
     // Record stats for Theory Mode games (Free Mode has no opening ID)
     if (openingId) {
-      recordGame(openingId, moves).then(updated => {
-        setIsNewBest(moves > 0 && updated.best_score === moves && updated.total_games > 1);
-      }).catch(() => { /* stats are non-critical */ });
+      recordGame(openingId, moves)
+        .then(({ isNewBest }) => setIsNewBest(isNewBest))
+        .catch(() => { /* stats are non-critical */ });
     }
   }, [clearSetup, openingId, moves]);
 

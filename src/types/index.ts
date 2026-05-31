@@ -45,8 +45,10 @@ export interface GameState {
   /** Index into opening.moves for OPENING_PHASE */
   openingMoveIndex: number;
   isGameOver: boolean;
-  gameOverReason: 'two_misses' | 'completed' | null;
+  gameOverReason: GameOverReason | null;
 }
+
+export type GameOverReason = 'two_misses' | 'checkmate' | 'draw' | 'data_error';
 
 export interface SetupParams {
   opening: Opening | null; // null in free mode

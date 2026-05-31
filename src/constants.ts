@@ -3,6 +3,9 @@
 /** Number of consecutive wrong moves before game over. */
 export const MISS_LIMIT = 2;
 
+/** The message shown when the opening theory line is fully played. */
+export const MSG_OPENING_COMPLETE = 'Opening complete! Now find the best moves.';
+
 /** Feedback messages and their display colors.
  *  Keys are exact strings emitted by useChessGame; values are hex colors. */
 export const FEEDBACK_COLOR: Record<string, string> = {
@@ -10,12 +13,12 @@ export const FEEDBACK_COLOR: Record<string, string> = {
   '2nd best move!':          '#86efac',
   '3rd best move!':          '#86efac',
   'Good move!':              '#86efac',
-  'Opening complete! Find the best moves.':       '#22c55e',
-  'Opening complete! Now find the best moves.':   '#22c55e',
-  'Wrong move! One more chance.':                 '#ff9800',
-  'Not the best move. One more chance!':          '#ff9800',
+  [MSG_OPENING_COMPLETE]:    '#22c55e',
+  'Wrong move! One more chance.':      '#ff9800',
+  'Not the best move. One more chance!': '#ff9800',
   'Game over!':              '#e94560',
-  'Game complete!':          '#22c55e',
+  'Checkmate!':              '#22c55e',
+  'Draw!':                   '#8892a4',
 };
 
 /** Fallback color for unknown feedback messages. */

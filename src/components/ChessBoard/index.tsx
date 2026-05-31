@@ -69,7 +69,8 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
     async (from: Square, to: Square, promotion?: string) => {
       isAnimatingSV.value = true;
 
-      const castling = detectCastling(boardLogic, from, to);
+      // Castling is only possible when the king moves from an e-file square.
+      const castling = from[0] === 'e' ? detectCastling(boardLogic, from, to) : null;
       // Await both king and rook animations together so the state update
       // (which re-renders Pieces and resets piece.square) only fires after
       // both animations are fully complete, preventing a mid-animation snap.
@@ -231,7 +232,7 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
     move: async ({ from, to, promotion }: MoveData) => {
       isAnimatingSV.value = true;
 
-      const castling = detectCastling(boardLogic, from, to);
+      const castling = from[0] === 'e' ? detectCastling(boardLogic, from, to) : null;
       // Await king and rook together so the state update (re-render) only fires
       // after both animations complete, preventing a mid-animation snap.
       await Promise.all([

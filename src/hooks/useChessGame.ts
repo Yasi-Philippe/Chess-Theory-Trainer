@@ -1,15 +1,10 @@
 import { useState, useRef, useCallback } from 'react';
 import { Chess } from 'chess.js';
-import { MISS_LIMIT } from '../constants';
+import { MISS_LIMIT, MSG_OPENING_COMPLETE } from '../constants';
 import type { Square } from 'chess.js';
-import { Opening, OpeningMode, PlayerColor, GamePhase, StockfishMove, WDL } from '../types';
+import { Opening, OpeningMode, PlayerColor, GamePhase, StockfishMove, GameOverReason } from '../types';
 import { weightedRandomMove } from './useStockfish';
 import { OPENINGS } from '../data/openings';
-
-function winProb(wdl: WDL): number {
-  const total = wdl.win + wdl.draw + wdl.loss;
-  return total === 0 ? 0 : wdl.win / total;
-}
 
 // Normalize FEN to the first 4 fields (position + castling + en-passant + active color),
 // dropping the halfmove clock and fullmove number for position-only comparison.
@@ -17,33 +12,36 @@ function normalizeFen(fen: string): string {
   return fen.split(' ').slice(0, 4).join(' ');
 }
 
-// Checks whether playedUci is a recognized theory move from the current position.
-// Used in Free Mode to accept any principled opening move regardless of engine ranking.
-function isTheoryMove(fen: string, playedUci: string): boolean {
-  const target = normalizeFen(fen);
+// Pre-built at module load time: maps normalized FEN → set of valid theory UCI moves.
+// Replaying all openings once at startup makes isTheoryMove an O(1) lookup instead of
+// O(openings × moves) on every wrong move in Free Mode.
+const THEORY_INDEX: Map<string, Set<string>> = (() => {
+  const index = new Map<string, Set<string>>();
   for (const opening of OPENINGS) {
     const chess = new Chess();
-    for (let i = 0; i < opening.moves.length; i++) {
-      if (normalizeFen(chess.fen()) === target) {
-        try {
-          const m = new Chess(chess.fen()).move(opening.moves[i]);
-          if (m) {
-            const uci = `${m.from}${m.to}${m.promotion ?? ''}`;
-            if (uci === playedUci) return true;
-          }
-        } catch { /* invalid move in opening data */ }
-      }
-      try { chess.move(opening.moves[i]); } catch { break; }
+    for (const san of opening.moves) {
+      const fen = normalizeFen(chess.fen());
+      try {
+        const move = chess.move(san);
+        if (!move) break;
+        const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+        if (!index.has(fen)) index.set(fen, new Set());
+        index.get(fen)!.add(uci);
+      } catch { break; }
     }
   }
-  return false;
+  return index;
+})();
+
+function isTheoryMove(fen: string, playedUci: string): boolean {
+  return THEORY_INDEX.get(normalizeFen(fen))?.has(playedUci) ?? false;
 }
 
 export interface PlayerMoveResult {
   outcome: 'accepted' | 'wrong_move' | 'illegal';
   engineMove?: { from: Square; to: Square; promotion?: string };
   gameOver?: boolean;
-  gameOverReason?: 'two_misses' | 'checkmate' | 'draw' | 'data_error';
+  gameOverReason?: GameOverReason;
   bestMove?: { from: Square; to: Square };
 }
 
@@ -51,7 +49,6 @@ interface UseChessGameParams {
   opening: Opening | null;
   playerColor: PlayerColor;
   mode: OpeningMode;
-  getBestMove: (fen: string, color: PlayerColor) => Promise<StockfishMove[]>;
   getEligibleSet: (fen: string) => Promise<StockfishMove[]>;
 }
 
@@ -63,11 +60,10 @@ export interface ChessGameState {
   openingMoveIndex: number;
   lastValidFen: string;
   startingFen: string;
-  gameOverReason: 'two_misses' | 'checkmate' | 'draw' | 'data_error' | null;
+  gameOverReason: GameOverReason | null;
 }
 
 const INITIAL_FEN = new Chess().fen();
-const MSG_OPENING_COMPLETE = 'Opening complete! Now find the best moves.';
 
 function isPlayerTurnAtIndex(index: number, playerColor: PlayerColor): boolean {
   const whiteToMove = index % 2 === 0;
@@ -88,25 +84,24 @@ function detectGameOver(chess: Chess): 'checkmate' | 'draw' | null {
   return null;
 }
 
+function getInitialPhase(mode: OpeningMode, playerColor: PlayerColor): GamePhase {
+  if (mode === 'free') {
+    return playerColor === 'black' ? 'ENGINE_TURN' : 'GAME_PHASE';
+  }
+  return 'OPENING_PHASE';
+}
+
 export function useChessGame({
   opening,
   playerColor,
   mode,
-  getBestMove,
   getEligibleSet,
 }: UseChessGameParams) {
   const chessRef = useRef<Chess>(new Chess());
   const engineColor: PlayerColor = playerColor === 'white' ? 'black' : 'white';
 
-  const getInitialPhase = (): GamePhase => {
-    if (mode === 'free') {
-      return playerColor === 'black' ? 'ENGINE_TURN' : 'GAME_PHASE';
-    }
-    return 'OPENING_PHASE';
-  };
-
   const [state, setState] = useState<ChessGameState>({
-    phase: getInitialPhase(),
+    phase: getInitialPhase(mode, playerColor),
     moveCount: 0,
     consecutiveMisses: 0,
     feedbackMessage: null,
@@ -121,13 +116,11 @@ export function useChessGame({
   // ─── Prefetch cache ───────────────────────────────────────────────────────
   // After the engine moves, we immediately compute the eligible set for the
   // player's next position in the background so move validation is instant.
-  // The engine's reply is always computed live (under the thinking banner).
   const prefetchRef = useRef<{
     forFen: string;
     eligibleSet: StockfishMove[];
   } | null>(null);
-  // Generation counter: incremented on each new prefetch start.
-  // The async function aborts its result if a newer prefetch has started.
+  // Generation counter: incremented on each new prefetch start to cancel stale results.
   const prefetchGenRef = useRef(0);
 
   // ─── Background prefetch ──────────────────────────────────────────────────
@@ -135,10 +128,9 @@ export function useChessGame({
   async function startPrefetch(fen: string) {
     const myGen = ++prefetchGenRef.current;
     prefetchRef.current = null;
-
     try {
       const eligibleSet = await getEligibleSet(fen);
-      if (prefetchGenRef.current !== myGen) return; // superseded
+      if (prefetchGenRef.current !== myGen) return;
       prefetchRef.current = { forFen: fen, eligibleSet };
     } catch {
       // Prefetch failed — live fallback will be used when the player moves
@@ -155,64 +147,16 @@ export function useChessGame({
       const eligible = await getEligibleSet(fen);
       if (eligible.length === 0) return null;
       const chosen = weightedRandomMove(eligible);
-      // Validate the move exists in this position before returning
+      // Validate before returning — Stockfish UCIs are reliable but a cheap check
+      // protects against edge cases (promotions, en passant) that could diverge.
       const clone = new Chess(fen);
-      const move = clone.move(chosen.uci);
-      return move ? chosen.uci : null;
+      return clone.move(chosen.uci) ? chosen.uci : null;
     } catch {
       return null;
     }
   }
 
   // ─── Opening phase ────────────────────────────────────────────────────────
-
-  function applyNextOpponentOpeningMove(): {
-    move: { from: Square; to: Square; promotion?: string };
-    nextIndex: number;
-    openingComplete: boolean;
-  } | null {
-    if (!opening) return null;
-    const { openingMoveIndex } = state;
-    if (openingMoveIndex >= opening.moves.length) return null;
-
-    const san = opening.moves[openingMoveIndex];
-    let appliedMove = null;
-    try {
-      appliedMove = chessRef.current.move(san);
-    } catch {
-      // Invalid move in opening data — fail safely to avoid permanent freeze
-    }
-
-    if (!appliedMove) {
-      setState(prev => ({
-        ...prev,
-        phase: 'GAME_OVER',
-        gameOverReason: 'data_error',
-        feedbackMessage: 'Opening data error.',
-      }));
-      return null;
-    }
-
-    const nextIndex = openingMoveIndex + 1;
-    const openingComplete = nextIndex >= opening.moves.length;
-    const lastValidFen = chessRef.current.fen();
-
-    setState(prev => ({
-      ...prev,
-      openingMoveIndex: nextIndex,
-      phase: openingComplete ? 'ENGINE_TURN' : 'OPENING_PHASE',
-      lastValidFen,
-      feedbackMessage: openingComplete ? MSG_OPENING_COMPLETE : null,
-    }));
-
-    return {
-      move: uciToSquares(
-        `${appliedMove.from}${appliedMove.to}${appliedMove.promotion ?? ''}`
-      ),
-      nextIndex,
-      openingComplete,
-    };
-  }
 
   function handleOpeningMove(from: Square, to: Square, promotion?: string): PlayerMoveResult {
     if (!opening) return { outcome: 'illegal' };
@@ -231,7 +175,8 @@ export function useChessGame({
     if (!move || move.san !== expectedSan) {
       const newMisses = consecutiveMisses + 1;
       if (newMisses >= MISS_LIMIT) {
-        const bestVerbose = new Chess(chessRef.current.fen())
+        // Use chessRef directly (same position as clone) to avoid a second Chess allocation.
+        const bestVerbose = chessRef.current
           .moves({ verbose: true })
           .find((m: any) => m.san === expectedSan);
         const bestMove = bestVerbose
@@ -282,7 +227,6 @@ export function useChessGame({
     }
 
     if (!opponentMove) {
-      // Invalid opponent move in opening data
       setState(prev => ({
         ...prev,
         phase: 'GAME_OVER',
@@ -352,11 +296,7 @@ export function useChessGame({
     if (!isAccepted) {
       const newMisses = state.consecutiveMisses + 1;
       if (newMisses >= MISS_LIMIT) {
-        const bestUci = eligibleMoves[0].uci;
-        const bestMove = {
-          from: bestUci.slice(0, 2) as Square,
-          to: bestUci.slice(2, 4) as Square,
-        };
+        const bestMove = uciToSquares(eligibleMoves[0].uci);
         setState(prev => ({
           ...prev,
           consecutiveMisses: newMisses,
@@ -364,7 +304,12 @@ export function useChessGame({
           gameOverReason: 'two_misses',
           feedbackMessage: 'Game over!',
         }));
-        return { outcome: 'wrong_move', gameOver: true, gameOverReason: 'two_misses', bestMove };
+        return {
+          outcome: 'wrong_move',
+          gameOver: true,
+          gameOverReason: 'two_misses',
+          bestMove: { from: bestMove.from, to: bestMove.to },
+        };
       }
       setState(prev => ({
         ...prev,
@@ -442,8 +387,44 @@ export function useChessGame({
     [state],
   );
 
-  const playOpponentOpeningMove = useCallback(() => {
-    return applyNextOpponentOpeningMove();
+  // Merged from the former one-liner `playOpponentOpeningMove` wrapper — useCallback
+  // applied directly to the implementation avoids an unnecessary indirection layer.
+  const playOpponentOpeningMove = useCallback((): {
+    move: { from: Square; to: Square; promotion?: string };
+  } | null => {
+    if (!opening) return null;
+    const { openingMoveIndex } = state;
+    if (openingMoveIndex >= opening.moves.length) return null;
+
+    const san = opening.moves[openingMoveIndex];
+    let appliedMove = null;
+    try {
+      appliedMove = chessRef.current.move(san);
+    } catch { /* invalid move in opening data — fail safely */ }
+
+    if (!appliedMove) {
+      setState(prev => ({
+        ...prev,
+        phase: 'GAME_OVER',
+        gameOverReason: 'data_error',
+        feedbackMessage: 'Opening data error.',
+      }));
+      return null;
+    }
+
+    const nextIndex = openingMoveIndex + 1;
+    const openingComplete = nextIndex >= opening.moves.length;
+    const lastValidFen = chessRef.current.fen();
+
+    setState(prev => ({
+      ...prev,
+      openingMoveIndex: nextIndex,
+      phase: openingComplete ? 'ENGINE_TURN' : 'OPENING_PHASE',
+      lastValidFen,
+      feedbackMessage: openingComplete ? MSG_OPENING_COMPLETE : null,
+    }));
+
+    return { move: uciToSquares(`${appliedMove.from}${appliedMove.to}${appliedMove.promotion ?? ''}`) };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   // Depends on openingMoveIndex and opening — both captured correctly here.
   }, [state.openingMoveIndex, opening]);
@@ -453,7 +434,6 @@ export function useChessGame({
     to: Square;
     promotion?: string;
   } | null> => {
-    // Fetch the chosen engine move UCI without mutating chessRef yet
     const uci = await fetchEngineMoveUci();
     if (!uci) return null;
 
@@ -473,7 +453,6 @@ export function useChessGame({
       feedbackMessage: naturalEnd === 'checkmate' ? 'Checkmate!' : naturalEnd === 'draw' ? 'Draw!' : null,
     }));
 
-    // Start pre-computing the eligible set for the player's next turn in the background
     if (!naturalEnd) {
       startPrefetch(newFen);
     }
@@ -488,9 +467,7 @@ export function useChessGame({
     prefetchRef.current = null;
     prefetchGenRef.current = 0;
     setState({
-      phase: mode === 'free'
-        ? (playerColor === 'black' ? 'ENGINE_TURN' : 'GAME_PHASE')
-        : 'OPENING_PHASE',
+      phase: getInitialPhase(mode, playerColor),
       moveCount: 0,
       consecutiveMisses: 0,
       feedbackMessage: null,

@@ -86,10 +86,11 @@ export async function getByCategory(
   const rows = await db.getAllAsync<OpeningRow>(sql, params);
   if (rows.length === 0) return [];
 
-  // Fetch all nodes for the matched openings in a single query (avoids N+1).
-  const ids = rows.map(r => `'${r.id.replace(/'/g, "''")}'`).join(',');
+  // Fetch all nodes for the matched openings in a single parameterized query (avoids N+1).
+  const placeholders = rows.map(() => '?').join(',');
   const nodes = await db.getAllAsync<NodeRow>(
-    `SELECT * FROM opening_nodes WHERE opening_id IN (${ids}) ORDER BY opening_id, ply, id`,
+    `SELECT * FROM opening_nodes WHERE opening_id IN (${placeholders}) ORDER BY opening_id, ply, id`,
+    rows.map(r => r.id),
   );
 
   const nodesByOpening = new Map<string, NodeRow[]>();

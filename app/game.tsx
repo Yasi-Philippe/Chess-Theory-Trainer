@@ -40,7 +40,7 @@ export default function GameScreen() {
   // a board animation is still in progress (engine move, opening reply, premove).
   const [isAnimating, setIsAnimating] = useState(false);
 
-  const { webviewRef, getBestMove, getEligibleSet, htmlUri, onWebViewMessage, isEngineReady, isError, errorMessage } =
+  const { webviewRef, getEligibleSet, htmlUri, onWebViewMessage, isEngineReady, isError, errorMessage } =
     useStockfish();
 
   const {
@@ -55,7 +55,6 @@ export default function GameScreen() {
     opening: setup.opening,
     playerColor: setup.color,
     mode: setup.mode,
-    getBestMove,
     getEligibleSet,
   });
 
@@ -140,7 +139,7 @@ export default function GameScreen() {
     if (state.phase === 'ENGINE_TURN' && isEngineReady && !isAnimating) {
       playEngineMove();
     }
-    // playEngineMove is stable (depends only on requestEngineMove which depends on getBestMove)
+    // playEngineMove is stable (depends only on requestEngineMove which depends on getEligibleSet)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.phase, isEngineReady, isAnimating, playEngineMove]);
 
@@ -270,7 +269,7 @@ export default function GameScreen() {
           openingMode: setup.mode,
           openingMoveIndex: state.openingMoveIndex,
           isGameOver: state.phase === 'GAME_OVER',
-          gameOverReason: null,
+          gameOverReason: state.gameOverReason,
         }}
         feedbackMessage={state.feedbackMessage}
       />

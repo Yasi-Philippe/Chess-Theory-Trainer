@@ -2,7 +2,7 @@ import { useRef, useCallback, useEffect, useState } from 'react';
 import { WebView } from 'react-native-webview';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
-import { StockfishMove, WDL, PlayerColor } from '../types';
+import { StockfishMove, WDL } from '../types';
 
 const ANALYSIS_DEPTH = 8;
 const MULTI_PV = 10;
@@ -10,7 +10,6 @@ const ANALYSIS_TIMEOUT_MS = 8000;
 
 interface UseStockfishReturn {
   webviewRef: React.RefObject<WebView>;
-  getBestMove: (fen: string, color: PlayerColor) => Promise<StockfishMove[]>;
   getEligibleSet: (fen: string) => Promise<StockfishMove[]>;
   htmlUri: string;
   onWebViewMessage: (event: { nativeEvent: { data: string } }) => void;
@@ -26,12 +25,12 @@ function parseInfoLine(line: string): { rank: number; move: StockfishMove } | nu
     return null;
   }
   const multipvMatch = line.match(/multipv (\d+)/);
+  if (!multipvMatch) return null;
   const pvMatch = line.match(/ pv ([a-h][1-8][a-h][1-8][qrbnQRBN]?)/);
+  if (!pvMatch) return null;
   const cpMatch = line.match(/score cp (-?\d+)/);
   const mateMatch = line.match(/score mate (-?\d+)/);
   const wdlMatch = line.match(/wdl (\d+) (\d+) (\d+)/);
-
-  if (!multipvMatch || !pvMatch) return null;
 
   const rank = parseInt(multipvMatch[1], 10);
   const uci = pvMatch[1];
@@ -165,7 +164,6 @@ export function useStockfish(): UseStockfishReturn {
     resolve: (moves: StockfishMove[]) => void;
     reject: (err: Error) => void;
     moves: Map<number, StockfishMove>;
-    multiPV: number;
   } | null>(null);
 
   // Each time we send 'stop', the engine replies with a bestmove for the
@@ -255,7 +253,7 @@ export function useStockfish(): UseStockfishReturn {
     (fen: string, multiPV: number): Promise<StockfishMove[]> => {
       const analysisPromise = new Promise<StockfishMove[]>((resolve, reject) => {
         const startAnalysis = () => {
-          pendingAnalysis.current = { resolve, reject, moves: new Map(), multiPV };
+          pendingAnalysis.current = { resolve, reject, moves: new Map() };
           sendCommand('ucinewgame');
           sendCommand(`position fen ${fen}`);
           sendCommand(`setoption name MultiPV value ${multiPV}`);
@@ -316,14 +314,6 @@ export function useStockfish(): UseStockfishReturn {
     [sendCommand],
   );
 
-  const getBestMove = useCallback(
-    async (fen: string, _color: PlayerColor): Promise<StockfishMove[]> => {
-      const moves = await analyse(fen, MULTI_PV);
-      return moves.slice(0, MULTI_PV);
-    },
-    [analyse],
-  );
-
   // Returns the set of moves the engine considers genuinely good for the position.
   // Used for both player move validation and engine move selection — the same set.
   //
@@ -351,7 +341,6 @@ export function useStockfish(): UseStockfishReturn {
 
   return {
     webviewRef,
-    getBestMove,
     getEligibleSet,
     htmlUri,
     onWebViewMessage,

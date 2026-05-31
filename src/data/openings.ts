@@ -361,7 +361,7 @@ export const OPENINGS: Opening[] = [
     eco: 'A09',
     color: 'white',
     category: 'main_line',
-    moves: ['Nf3', 'd5', 'c4', 'd4', 'b4', 'f6', 'e3', 'dxe3', 'Bxe3'],
+    moves: ['Nf3', 'd5', 'c4', 'd4', 'b4', 'f6', 'e3', 'dxe3', 'fxe3'],
     description: 'Hypermodern; White pressures d5 indirectly with Nf3 and c4.',
   },
   {
@@ -572,7 +572,7 @@ export const OPENINGS: Opening[] = [
     eco: 'E92',
     color: 'black',
     category: 'main_line',
-    moves: ['d4', 'Nf6', 'c4', 'g6', 'Nc3', 'Bg7', 'e4', 'd6', 'Be2', 'O-O', 'Nf3', 'e5', 'd5', 'Nd7', 'Be3'],
+    moves: ['d4', 'Nf6', 'c4', 'g6', 'Nc3', 'Bg7', 'e4', 'd6', 'Be2', 'O-O', 'Nf3', 'e5', 'd5', 'Nfd7', 'Be3'],
     description: "Black builds the KID pawn structure; launches a queenside counterattack.",
   },
   {
@@ -581,7 +581,7 @@ export const OPENINGS: Opening[] = [
     eco: 'E99',
     color: 'black',
     category: 'main_line',
-    moves: ['d4', 'Nf6', 'c4', 'g6', 'Nc3', 'Bg7', 'e4', 'd6', 'Nf3', 'O-O', 'Be2', 'e5', 'd5', 'Nd7', 'Be3', 'f5', 'Ng5'],
+    moves: ['d4', 'Nf6', 'c4', 'g6', 'Nc3', 'Bg7', 'e4', 'd6', 'Nf3', 'O-O', 'Be2', 'e5', 'd5', 'Nfd7', 'Be3', 'f5', 'Ng5'],
     description: "The most double-edged KID; Black pushes f5 for kingside attack while White attacks queenside.",
   },
   {

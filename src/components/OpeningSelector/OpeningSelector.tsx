@@ -187,11 +187,14 @@ export function OpeningSelector({ onSelect, navigating = false }: OpeningSelecto
                     <Text style={styles.openingMoves}>
                       {item.moves.length} moves in theory line
                     </Text>
-                    {stats.has(item.id) && (
-                      <Text style={styles.openingStats}>
-                        Best: {stats.get(item.id)!.best_score} · {stats.get(item.id)!.total_games} game{stats.get(item.id)!.total_games !== 1 ? 's' : ''}
-                      </Text>
-                    )}
+                    {(() => {
+                      const s = stats.get(item.id);
+                      return s ? (
+                        <Text style={styles.openingStats}>
+                          Best: {s.best_score} · {s.total_games} game{s.total_games !== 1 ? 's' : ''}
+                        </Text>
+                      ) : null;
+                    })()}
                   </View>
                 </TouchableOpacity>
               )}

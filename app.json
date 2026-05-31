@@ -32,12 +32,17 @@
       [
         "expo-asset",
         {
-          "assets": ["./assets/stockfish/stockfish.js.txt"]
+          "assets": [
+            "./assets/stockfish/stockfish.js.txt"
+          ]
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-sqlite"
     ],
-    "assetBundlePatterns": ["assets/**/*"],
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
     "experiments": {
       "typedRoutes": true
     }

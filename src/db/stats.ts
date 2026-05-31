@@ -19,16 +19,22 @@ export async function getAllStats(): Promise<OpeningStats[]> {
   return db.getAllAsync<OpeningStats>('SELECT * FROM opening_stats');
 }
 
-export async function recordGame(openingId: string, score: number): Promise<OpeningStats> {
+export async function recordGame(
+  openingId: string,
+  score: number,
+): Promise<{ stats: OpeningStats; isNewBest: boolean }> {
   const db = await getDb();
-  await db.runAsync(
+  // RETURNING * gives us the updated row in the same statement, avoiding a second round-trip.
+  const rows = await db.getAllAsync<OpeningStats>(
     `INSERT INTO opening_stats (opening_id, best_score, total_games)
      VALUES (?, ?, 1)
      ON CONFLICT(opening_id) DO UPDATE SET
        total_games = total_games + 1,
-       best_score  = MAX(best_score, excluded.best_score)`,
+       best_score  = MAX(best_score, excluded.best_score)
+     RETURNING *`,
     [openingId, score],
   );
-  const updated = await getStats(openingId);
-  return updated!;
+  const stats = rows[0]!;
+  // isNewBest: the upsert raised best_score to this score, meaning it's a new record.
+  return { stats, isNewBest: score > 0 && stats.best_score === score };
 }
