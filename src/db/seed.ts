@@ -1,11 +1,16 @@
 import { getDb } from './database';
 import { OPENINGS } from '../data/openings';
 
-/**
- * Seeds the DB from the static OPENINGS array on first install.
- * Idempotent: exits immediately if data already exists.
- */
-export async function seedOpenings(): Promise<void> {
+// Module-level lock: concurrent calls (e.g. React StrictMode double-invoke)
+// share a single in-flight promise instead of racing to insert duplicate rows.
+let _seedPromise: Promise<void> | null = null;
+
+export function seedOpenings(): Promise<void> {
+  if (!_seedPromise) _seedPromise = _doSeed();
+  return _seedPromise;
+}
+
+async function _doSeed(): Promise<void> {
   const db = await getDb();
 
   const row = await db.getFirstAsync<{ count: number }>(

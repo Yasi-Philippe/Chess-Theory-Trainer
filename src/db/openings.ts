@@ -14,7 +14,7 @@ export interface OpeningRow {
 
 export interface NodeRow {
   id: number;
-  opening_id: string;
+  opening_id: string; // used for grouping in getByCategory
   parent_id: number | null;
   move_san: string | null;
   ply: number;
@@ -84,12 +84,25 @@ export async function getByCategory(
   sql += ' ORDER BY name';
 
   const rows = await db.getAllAsync<OpeningRow>(sql, params);
-  const result: Opening[] = [];
-  for (const row of rows) {
-    const moves = await _getMainLineMoves(db, row.id);
-    result.push(rowToOpening(row, moves));
+  if (rows.length === 0) return [];
+
+  // Fetch all nodes for the matched openings in a single query (avoids N+1).
+  const ids = rows.map(r => `'${r.id.replace(/'/g, "''")}'`).join(',');
+  const nodes = await db.getAllAsync<NodeRow>(
+    `SELECT * FROM opening_nodes WHERE opening_id IN (${ids}) ORDER BY opening_id, ply, id`,
+  );
+
+  const nodesByOpening = new Map<string, NodeRow[]>();
+  for (const node of nodes) {
+    if (!nodesByOpening.has(node.opening_id)) nodesByOpening.set(node.opening_id, []);
+    nodesByOpening.get(node.opening_id)!.push(node);
   }
-  return result;
+
+  return rows.map(row => {
+    const openingNodes = nodesByOpening.get(row.id) ?? [];
+    const moves = nodesToMoves(buildMainLine(openingNodes));
+    return rowToOpening(row, moves);
+  });
 }
 
 export async function getById(id: string): Promise<Opening | null> {

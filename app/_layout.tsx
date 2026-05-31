@@ -9,18 +9,18 @@ configureReanimatedLogger({ level: ReanimatedLogLevel.warn, strict: false });
 
 // ─── Global error boundary ────────────────────────────────────────────────────
 
-type EBState = { hasError: boolean; message: string };
+type EBState = { hasError: boolean; message: string; errorKey: number };
 
 class ErrorBoundary extends Component<{ children: React.ReactNode }, EBState> {
-  state: EBState = { hasError: false, message: '' };
+  state: EBState = { hasError: false, message: '', errorKey: 0 };
 
-  static getDerivedStateFromError(error: unknown): EBState {
+  static getDerivedStateFromError(error: unknown): Partial<EBState> {
     const message = error instanceof Error ? error.message : String(error);
     return { hasError: true, message };
   }
 
   componentDidCatch(error: unknown, info: { componentStack: string }) {
-    console.error('[ErrorBoundary]', error, info.componentStack);
+    if (__DEV__) console.error('[ErrorBoundary]', error, info.componentStack);
   }
 
   render() {
@@ -31,14 +31,20 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, EBState> {
           <Text style={eb.message}>{this.state.message}</Text>
           <TouchableOpacity
             style={eb.button}
-            onPress={() => this.setState({ hasError: false, message: '' })}
+            onPress={() => this.setState(s => ({ hasError: false, message: '', errorKey: s.errorKey + 1 }))}
           >
             <Text style={eb.buttonText}>Try again</Text>
           </TouchableOpacity>
         </View>
       );
     }
-    return this.props.children;
+    // errorKey forces a full remount of the child tree on recovery,
+    // preventing reuse of the same component state that caused the crash.
+    return (
+      <React.Fragment key={this.state.errorKey}>
+        {this.props.children}
+      </React.Fragment>
+    );
   }
 }
 

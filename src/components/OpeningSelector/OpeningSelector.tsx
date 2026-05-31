@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Opening, PlayerColor, OpeningMode, OpeningCategory } from '../../types';
 import { useOpenings } from '../../db/useOpenings';
+import { useAllStats } from '../../db/useStats';
 
 const CATEGORIES: { key: OpeningCategory; label: string }[] = [
   { key: 'main_line', label: 'Main Line' },
@@ -31,6 +32,7 @@ export function OpeningSelector({ onSelect, navigating = false }: OpeningSelecto
   const [search, setSearch] = useState('');
 
   const { openings: allOpenings, loading: dbLoading } = useOpenings(selectedCategory, selectedColor);
+  const { stats } = useAllStats();
 
   const filteredOpenings = useMemo(() => {
     if (!search.trim()) return allOpenings;
@@ -181,9 +183,16 @@ export function OpeningSelector({ onSelect, navigating = false }: OpeningSelecto
                   <Text style={styles.openingDesc} numberOfLines={2}>
                     {item.description}
                   </Text>
-                  <Text style={styles.openingMoves}>
-                    {item.moves.length} moves in theory line
-                  </Text>
+                  <View style={styles.openingFooter}>
+                    <Text style={styles.openingMoves}>
+                      {item.moves.length} moves in theory line
+                    </Text>
+                    {stats.has(item.id) && (
+                      <Text style={styles.openingStats}>
+                        Best: {stats.get(item.id)!.best_score} · {stats.get(item.id)!.total_games} game{stats.get(item.id)!.total_games !== 1 ? 's' : ''}
+                      </Text>
+                    )}
+                  </View>
                 </TouchableOpacity>
               )}
             />
@@ -369,9 +378,19 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginBottom: 4,
   },
+  openingFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   openingMoves: {
     color: '#555e6e',
     fontSize: 11,
+  },
+  openingStats: {
+    color: '#e94560',
+    fontSize: 11,
+    fontWeight: '600',
   },
   freeModeSpacer: {
     flex: 1,

@@ -40,7 +40,7 @@ export default function GameScreen() {
   // a board animation is still in progress (engine move, opening reply, premove).
   const [isAnimating, setIsAnimating] = useState(false);
 
-  const { webviewRef, getBestMove, getTopMove, htmlUri, onWebViewMessage, isEngineReady, isError, errorMessage } =
+  const { webviewRef, getBestMove, getEligibleSet, htmlUri, onWebViewMessage, isEngineReady, isError, errorMessage } =
     useStockfish();
 
   const {
@@ -56,7 +56,7 @@ export default function GameScreen() {
     playerColor: setup.color,
     mode: setup.mode,
     getBestMove,
-    getTopMove,
+    getEligibleSet,
   });
 
   // Always-fresh refs so async callbacks never close over stale values.
@@ -81,10 +81,17 @@ export default function GameScreen() {
   useEffect(() => {
     if (state.phase !== 'GAME_OVER') return;
     const timer = setTimeout(() => {
-      router.push({ pathname: '/game-over', params: { score: String(state.moveCount) } });
+      router.push({
+        pathname: '/game-over',
+        params: {
+          score: String(state.moveCount),
+          reason: state.gameOverReason ?? 'two_misses',
+          openingId: setup.opening?.id ?? '',
+        },
+      });
     }, 1500);
     return () => clearTimeout(timer);
-  }, [state.phase]);
+  }, [state.phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Engine move + queued premove execution ───────────────────────────────
 
@@ -171,6 +178,13 @@ export default function GameScreen() {
   const handleMove = useCallback(async (params: { from: Square; to: Square; promotion?: string }) => {
     const { from, to, promotion } = params;
     const validFen = stateRef.current.lastValidFen;
+    // Discard any queued premove when the player acts during the opening phase.
+    // There is a brief window between commitMove finishing and the opponent's
+    // animation starting where turnSV shows the opponent's color, which could
+    // cause an accidental premove to be queued.
+    if (stateRef.current.phase === 'OPENING_PHASE') {
+      premoveRef.current = null;
+    }
     const result = await onPlayerMoveRef.current(from, to, promotion);
 
     if (result.outcome === 'wrong_move' || result.outcome === 'illegal') {
@@ -222,9 +236,9 @@ export default function GameScreen() {
           ref={webviewRef}
           source={{ uri: htmlUri }}
           onMessage={onWebViewMessage}
-          onLoadStart={() => console.log('[WebView] load started')}
-          onLoadEnd={() => console.log('[WebView] load finished — waiting for readyok')}
-          onError={e => console.error('[WebView] error:', e.nativeEvent)}
+          onLoadStart={() => { if (__DEV__) console.log('[WebView] load started'); }}
+          onLoadEnd={() => { if (__DEV__) console.log('[WebView] load finished — waiting for readyok'); }}
+          onError={e => { if (__DEV__) console.error('[WebView] error:', e.nativeEvent); }}
           style={styles.hiddenWebview}
           javaScriptEnabled
           domStorageEnabled
@@ -289,6 +303,9 @@ export default function GameScreen() {
       {isError && (
         <View style={styles.engineOverlay}>
           <Text style={styles.engineErrorText}>⚠ {errorMessage}</Text>
+          <TouchableOpacity style={styles.errorButton} onPress={() => router.back()}>
+            <Text style={styles.errorButtonText}>Go back</Text>
+          </TouchableOpacity>
         </View>
       )}
       {!isEngineReady && !isError && state.phase !== 'OPENING_PHASE' && (
@@ -357,4 +374,6 @@ const styles = StyleSheet.create({
   },
   engineLoadingText: { color: '#8892a4', fontSize: 15, fontWeight: '600' },
   engineErrorText: { color: '#e94560', fontSize: 15, fontWeight: '600', textAlign: 'center', paddingHorizontal: 24 },
+  errorButton: { marginTop: 16, backgroundColor: '#0f3460', borderRadius: 10, paddingHorizontal: 24, paddingVertical: 12 },
+  errorButtonText: { color: '#e0e0e0', fontWeight: '700' },
 });

@@ -12,7 +12,6 @@ import { BoardBackground } from './BoardBackground';
 import { HighlightLayer } from './HighlightLayer';
 import type { HighlightLayerRef } from './HighlightLayer';
 import { SuggestionDots } from './SuggestionDots';
-import { ArrowLayer } from './ArrowLayer';
 import { Pieces } from './Pieces';
 import type { PiecesRef } from './Pieces';
 import { PromotionDialog } from './PromotionDialog';
@@ -71,13 +70,13 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
       isAnimatingSV.value = true;
 
       const castling = detectCastling(boardLogic, from, to);
-      if (castling) {
-        // Rook slides concurrently (fire-and-forget; same duration as king)
-        piecesRef.current?.animatePiece({ from: castling.rookFrom, to: castling.rookTo });
-      }
-      // Animate piece to its landing square first, then commit board state.
-      // This makes the drag-release feel fluid — piece slides from drop point to square center.
-      await piecesRef.current?.animatePiece({ from, to });
+      // Await both king and rook animations together so the state update
+      // (which re-renders Pieces and resets piece.square) only fires after
+      // both animations are fully complete, preventing a mid-animation snap.
+      await Promise.all([
+        piecesRef.current?.animatePiece({ from, to }),
+        castling ? piecesRef.current?.animatePiece({ from: castling.rookFrom, to: castling.rookTo }) : Promise.resolve(),
+      ]);
 
       const result = boardLogic.executeMove({ from, to, promotion });
       if (!result.success) {
@@ -233,12 +232,12 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
       isAnimatingSV.value = true;
 
       const castling = detectCastling(boardLogic, from, to);
-      await piecesRef.current?.animatePiece({ from, to });
-
-      if (castling) {
-        // Rook animates concurrently (fire-and-forget; same duration)
-        piecesRef.current?.animatePiece({ from: castling.rookFrom, to: castling.rookTo });
-      }
+      // Await king and rook together so the state update (re-render) only fires
+      // after both animations complete, preventing a mid-animation snap.
+      await Promise.all([
+        piecesRef.current?.animatePiece({ from, to }),
+        castling ? piecesRef.current?.animatePiece({ from: castling.rookFrom, to: castling.rookTo }) : Promise.resolve(),
+      ]);
 
       const result = boardLogic.executeMove({ from, to, promotion: promotion ?? 'q' });
       turnSV.value = boardLogic.turn;
@@ -326,7 +325,6 @@ const ChessBoardComponent = forwardRef<BoardRef, BoardProps>(function ChessBoard
           onPremoveTap={handlePremoveTap}
           onPremoveDrop={handlePremoveDrop}
         />
-        <ArrowLayer arrows={[]} />
       </View>
       <PromotionDialog
         visible={!!promotionPending}

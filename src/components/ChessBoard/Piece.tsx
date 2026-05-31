@@ -4,7 +4,7 @@ import React, {
   useImperativeHandle,
   useEffect,
 } from 'react';
-import { Text, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -18,10 +18,8 @@ import {
   DRAG_SCALE,
   SNAP_DURATION_MS,
   MOVE_ANIM_DURATION_MS,
-  TAP_MAX_DISTANCE,
-  PIECE_LABEL,
-  PIECE_COLOR,
 } from './constants';
+import { ChessPiece } from './ChessPiece';
 import type { Square, BoardPiece } from './types';
 
 export type PieceRef = {
@@ -171,13 +169,10 @@ export const Piece = memo(
           style={[
             styles.piece,
             { width: squareSize, height: squareSize, left: baseX, top: baseY },
-            { backgroundColor: piece.color === 'w' ? '#f5f0e8' : '#2a1a0e' },
             animatedStyle,
           ]}
         >
-          <Text style={[styles.label, { color: piece.color === 'w' ? '#333' : '#eee', fontSize: squareSize * 0.48 }]}>
-            {PIECE_LABEL[piece.type]}
-          </Text>
+          <ChessPiece color={piece.color} type={piece.type} size={squareSize} />
         </Animated.View>
       </GestureDetector>
     );
@@ -187,12 +182,5 @@ export const Piece = memo(
 const styles = StyleSheet.create({
   piece: {
     position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 4,
-  },
-  label: {
-    fontWeight: '700',
-    includeFontPadding: false,
   },
 });

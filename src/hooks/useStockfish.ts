@@ -11,7 +11,7 @@ const ANALYSIS_TIMEOUT_MS = 8000;
 interface UseStockfishReturn {
   webviewRef: React.RefObject<WebView>;
   getBestMove: (fen: string, color: PlayerColor) => Promise<StockfishMove[]>;
-  getTopMove: (fen: string, color: PlayerColor) => Promise<StockfishMove>;
+  getEligibleSet: (fen: string) => Promise<StockfishMove[]>;
   htmlUri: string;
   onWebViewMessage: (event: { nativeEvent: { data: string } }) => void;
   isEngineReady: boolean;
@@ -192,13 +192,13 @@ export function useStockfish(): UseStockfishReturn {
         if (!asset.localUri) {
           await asset.downloadAsync();
         }
-        console.log('[Stockfish] Reading asset from', asset.localUri);
+        if (__DEV__) console.log('[Stockfish] Reading asset from', asset.localUri);
         const scriptContent = await FileSystem.readAsStringAsync(asset.localUri!);
-        console.log('[Stockfish] Script loaded, length =', scriptContent.length);
+        if (__DEV__) console.log('[Stockfish] Script loaded, length =', scriptContent.length);
 
         const htmlPath = FileSystem.cacheDirectory + 'stockfish-bridge.html';
         await FileSystem.writeAsStringAsync(htmlPath, buildBridgeHtml(scriptContent));
-        console.log('[Stockfish] Bridge HTML written to', htmlPath);
+        if (__DEV__) console.log('[Stockfish] Bridge HTML written to', htmlPath);
         setHtmlUri(htmlPath);
       } catch (e) {
         console.error('[Stockfish] Failed to load engine:', e);
@@ -216,7 +216,7 @@ export function useStockfish(): UseStockfishReturn {
   const onWebViewMessage = useCallback(
     (event: { nativeEvent: { data: string } }) => {
       const line = event.nativeEvent.data;
-      console.log('[WebView→RN]', line.substring(0, 120));
+      if (__DEV__) console.log('[WebView→RN]', line.substring(0, 120));
 
       if (line === 'readyok') {
         if (pendingPostReadyRef.current) {
@@ -224,7 +224,7 @@ export function useStockfish(): UseStockfishReturn {
           pendingPostReadyRef.current = null;
           start();
         } else {
-          console.log('[Stockfish] Engine ready');
+          if (__DEV__) console.log('[Stockfish] Engine ready');
           setIsEngineReady(true);
         }
         return;
@@ -286,28 +286,32 @@ export function useStockfish(): UseStockfishReturn {
         }
       });
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Engine timeout')), ANALYSIS_TIMEOUT_MS),
-      );
-
-      return Promise.race([analysisPromise, timeoutPromise]).catch(err => {
-        if (pendingAnalysis.current) {
-          sendCommand('stop');
-          stopCountRef.current += 1;
-          pendingAnalysis.current = null;
-        }
-        if (pendingPostReadyRef.current) {
-          pendingPostReadyRef.current.reject(new Error('Cancelled'));
-          pendingPostReadyRef.current = null;
-        }
-        const msg = err instanceof Error ? err.message : 'Engine error';
-        if (msg !== 'Cancelled') {
-          console.error('[Stockfish] Analysis error:', msg);
-          setIsError(true);
-          setErrorMessage('Engine failed to respond. Please restart the app.');
-        }
-        throw err;
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Engine timeout')), ANALYSIS_TIMEOUT_MS);
       });
+
+      return Promise.race([analysisPromise, timeoutPromise])
+        .then(result => { clearTimeout(timeoutId); return result; })
+        .catch(err => {
+          clearTimeout(timeoutId);
+          if (pendingAnalysis.current) {
+            sendCommand('stop');
+            stopCountRef.current += 1;
+            pendingAnalysis.current = null;
+          }
+          if (pendingPostReadyRef.current) {
+            pendingPostReadyRef.current.reject(new Error('Cancelled'));
+            pendingPostReadyRef.current = null;
+          }
+          const msg = err instanceof Error ? err.message : 'Engine error';
+          if (msg !== 'Cancelled') {
+            if (__DEV__) console.error('[Stockfish] Analysis error:', msg);
+            setIsError(true);
+            setErrorMessage('Engine failed to respond. Please restart the app.');
+          }
+          throw err;
+        });
     },
     [sendCommand],
   );
@@ -320,11 +324,27 @@ export function useStockfish(): UseStockfishReturn {
     [analyse],
   );
 
-  const getTopMove = useCallback(
-    async (fen: string, _color: PlayerColor): Promise<StockfishMove> => {
-      const moves = await analyse(fen, 1);
-      if (moves.length === 0) throw new Error('No moves returned by engine');
-      return moves[0];
+  // Returns the set of moves the engine considers genuinely good for the position.
+  // Used for both player move validation and engine move selection — the same set.
+  //
+  // Algorithm:
+  //   1. Take up to 10 candidates from Stockfish.
+  //   2. If the best move has win probability > 50%, discard any move below 50%.
+  //   3. Discard any move whose win probability is below (best × 0.90).
+  //   4. Return what remains (1–10 moves, position-dependent).
+  const getEligibleSet = useCallback(
+    async (fen: string): Promise<StockfishMove[]> => {
+      const candidates = await analyse(fen, MULTI_PV);
+      if (candidates.length === 0) return [];
+
+      const bestWin = winProbability(candidates[0].wdl);
+      const threshold = bestWin * 0.9;
+
+      return candidates.filter(m => {
+        const w = winProbability(m.wdl);
+        if (bestWin > 0.5 && w < 0.5) return false;
+        return w >= threshold;
+      });
     },
     [analyse],
   );
@@ -332,7 +352,7 @@ export function useStockfish(): UseStockfishReturn {
   return {
     webviewRef,
     getBestMove,
-    getTopMove,
+    getEligibleSet,
     htmlUri,
     onWebViewMessage,
     isEngineReady,

@@ -1,7 +1,7 @@
 import React, { memo } from 'react';
 import { View, Text, TouchableOpacity, Modal, StyleSheet } from 'react-native';
 import type { Color, PieceSymbol } from './types';
-import { PIECE_LABEL } from './constants';
+import { ChessPiece } from './ChessPiece';
 
 const PROMOTION_PIECES: PieceSymbol[] = ['q', 'r', 'b', 'n'];
 
@@ -21,15 +21,10 @@ export const PromotionDialog = memo(function PromotionDialog({ visible, color, o
             {PROMOTION_PIECES.map(p => (
               <TouchableOpacity
                 key={p}
-                style={[
-                  styles.option,
-                  { backgroundColor: color === 'w' ? '#f5f0e8' : '#2a1a0e' },
-                ]}
+                style={styles.option}
                 onPress={() => onSelect(p)}
               >
-                <Text style={[styles.optionText, { color: color === 'w' ? '#333' : '#eee' }]}>
-                  {PIECE_LABEL[p]}
-                </Text>
+                <ChessPiece color={color} type={p} size={48} />
               </TouchableOpacity>
             ))}
           </View>
@@ -68,9 +63,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  optionText: {
-    fontSize: 28,
-    fontWeight: '700',
+    backgroundColor: '#16213e',
   },
 });

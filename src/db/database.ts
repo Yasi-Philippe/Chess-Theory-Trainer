@@ -46,6 +46,15 @@ async function runMigrations(db: Db): Promise<void> {
         ply            INTEGER NOT NULL DEFAULT 0,
         is_player_move INTEGER NOT NULL DEFAULT 0
       );
+
+      CREATE INDEX IF NOT EXISTS idx_nodes_opening_id ON opening_nodes(opening_id);
+      CREATE INDEX IF NOT EXISTS idx_nodes_parent_id  ON opening_nodes(parent_id);
+
+      CREATE TABLE IF NOT EXISTS opening_stats (
+        opening_id   TEXT    PRIMARY KEY REFERENCES openings(id),
+        best_score   INTEGER NOT NULL DEFAULT 0,
+        total_games  INTEGER NOT NULL DEFAULT 0
+      );
     `);
 
     if (row) {
